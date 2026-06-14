@@ -7,7 +7,7 @@
 
 [![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://github.com/TZYCeng/astrbot_plugin_owcx)
 [![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
-[![AstrBot](https://img.shields.io/badge/AstrBot-3.0+-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
+[![AstrBot](https://img.shields.io/badge/AstrBot-4.9+-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 
