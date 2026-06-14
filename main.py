@@ -1,661 +1,1123 @@
-from astrbot.api.star import Star, register
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.event.filter import PermissionType
+"""
+OW战绩查询插件 - AstrBot 插件主模块。
+
+基于 OverFast API 提供 Overwatch 2 玩家战绩查询功能，
+支持搜索玩家、查询摘要、统计概览、生涯统计、英雄信息等功能。
+"""
+
 from astrbot.api import logger
-import aiohttp
-import asyncio
-import json
-from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
-import time
-from astrbot.api.message_components import Plain
+from astrbot.api.all import AstrBotConfig
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.star import Context, Star
 
-# ---------- 常量定义 ----------
-OW_API = "https://overfast-api.tekrop.fr"
-# 段位分数范围映射
-DIVISION_SCORE = {
-    "bronze": "1-1499", "silver": "1500-1999", "gold": "2000-2499",
-    "platinum": "2500-2999", "diamond": "3000-3499", "master": "3500-3999",
-    "grandmaster": "4000+"
+from .api_client import OverFastAPIClient
+
+# ===== 常量定义 =====
+
+# 段位中英文映射与图标
+RANK_MAPPING = {
+    "bronze": ("青铜", "🥉"),
+    "silver": ("白银", "🥈"),
+    "gold": ("黄金", "🥇"),
+    "platinum": ("铂金", "🥈"),
+    "diamond": ("钻石", "💎"),
+    "master": ("大师", "🥇"),
+    "grandmaster": ("宗师", "🏆"),
+    "champion": ("冠军", "👑"),
+    "top500": ("五百强", "🌟"),
 }
-# 角色名中英文映射
-ROLE_CN = {"tank": "坦克", "damage": "输出", "support": "支援"}
-# 段位中英文映射
-DIVISION_CN = {
-    "bronze": "青铜", "silver": "白银", "gold": "黄金",
-    "platinum": "白金", "diamond": "钻石", "master": "大师",
-    "grandmaster": "宗师"
+
+# 角色中英文映射与图标
+ROLE_MAPPING = {
+    "tank": ("坦克", "🛡️"),
+    "damage": ("输出", "⚔️"),
+    "support": ("支援", "💚"),
 }
-# 缓存TTL配置（秒）
-CACHE_TTL = {
-    "summary": 600,    # 玩家概要：10分钟
-    "comp_summary": 600,# 竞技统计：10分钟
-    "qp_summary": 600, # 快速（休闲）统计：10分钟
-    "hero_stats": 3600 # 英雄数据：1小时
+
+# 游戏模式英文→中文映射（用于输出显示）
+GAMEMODE_MAPPING = {
+    "quickplay": "快速游戏",
+    "competitive": "竞技比赛",
 }
-# 英雄名-Key映射（扩展可支持更多英雄）
-HERO_NAME_TO_KEY = {
-    "源氏": "genji","麦克雷": "cassidy","士兵76": "soldier-76",
-    "法老之鹰": "pharah","死神": "reaper","猎空": "tracer","温斯顿": "winston",
-    "查莉娅": "zarya","莱因哈特": "reinhardt","安娜": "ana","天使": "mercy",
-    "卢西奥": "lucio","半藏": "hanzo","狂鼠": "junkrat","路霸": "roadhog",
-    "D.Va": "dva","奥丽莎": "orisa","西格玛": "sigma","布里吉塔": "brigitte",
-    "莫伊拉": "moira","巴蒂斯特": "baptiste","黑影": "sombra",
-    "托比昂": "torbjorn","堡垒": "bastion","美": "mei","艾什": "ashe",
-    "破坏球": "wrecking-ball","禅雅塔": "zenyatta","回声": "echo",
-    "渣客女王": "junker-queen","雾子": "kiriko","拉玛刹": "ramattra",
-    "生命之梭": "lifeweaver","伊拉锐": "illari","毛加": "mauga",
-    "探奇": "venture","黑百合": "widowmaker","末日铁拳": "doomfist",
-    "秩序之光": "symmetra","索杰恩": "sojourn","骇灾": "hazard","无漾": "wuyang",
-    "弗蕾娅": "freya","朱诺": "juno"
+
+# 游戏模式中文→英文映射（用于解析用户输入，支持多种中文说法）
+GAMEMODE_REVERSE_MAPPING = {
+    # 快速游戏
+    "快速": "quickplay",
+    "快速游戏": "quickplay",
+    "qp": "quickplay",
+    "quick": "quickplay",
+    "quickplay": "quickplay",
+    # 竞技比赛
+    "竞技": "competitive",
+    "竞技模式": "competitive",
+    "竞技比赛": "competitive",
+    "排位": "competitive",
+    "排位赛": "competitive",
+    "comp": "competitive",
+    "competitive": "competitive",
 }
-# 模式映射（默认休闲）
-MODE_CN_TO_EN = {"竞技": "competitive", "休闲": "quickplay"}
-MODE_EN_TO_CN = {"competitive": "竞技", "quickplay": "休闲"}
-DEFAULT_MODE = "quickplay"  # 默认模式：休闲
-DEFAULT_MODE_CN = "休闲"    # 默认模式中文显示
 
-# ---------- 工具类 ----------
-class TimedCache:
-    """带TTL的缓存类"""
-    def __init__(self):
-        self._data: Dict[str, tuple] = {}
+# 竞技模式对应图标
+COMPETITIVE_ICONS = {
+    "tank": "🛡️",
+    "damage": "⚔️",
+    "support": "💚",
+}
 
-    def get(self, key: str) -> Optional[Any]:
-        """获取缓存，过期自动删除"""
-        if key not in self._data:
-            return None
-        expire, value = self._data[key]
-        if time.time() > expire:
-            self._data.pop(key)
-            return None
-        return value
+# 英雄英文名到中文名的映射（用于输出显示）
+HERO_NAME_MAPPING = {
+    # 坦克
+    "doomfist": "末日铁拳",
+    "dva": "D.Va",
+    "orisa": "奥丽莎",
+    "reinhardt": "莱因哈特",
+    "roadhog": "路霸",
+    "sigma": "西格玛",
+    "winston": "温斯顿",
+    "wrecking-ball": "破坏球",
+    "zarya": "查莉娅",
+    "junker-queen": "渣客女王",
+    "ramattra": "拉玛刹",
+    "mauga": "毛加",
+    # 输出
+    "ashe": "艾什",
+    "bastion": "堡垒",
+    "cassidy": "卡西迪",
+    "echo": "回声",
+    "genji": "源氏",
+    "hanzo": "半藏",
+    "junkrat": "狂鼠",
+    "mei": "美",
+    "pharah": "法老之鹰",
+    "reaper": "死神",
+    "soldier-76": "士兵:76",
+    "sojourn": "索杰恩",
+    "sombra": "黑影",
+    "symmetra": "秩序之光",
+    "torbjorn": "托比昂",
+    "tracer": "猎空",
+    "venture": "探奇",
+    "widowmaker": "黑百合",
+    # 支援
+    "ana": "安娜",
+    "baptiste": "巴蒂斯特",
+    "brigitte": "布丽吉塔",
+    "kiriko": "雾子",
+    "lifeweaver": "生命之梭",
+    "lucio": "卢西奥",
+    "mercy": "天使",
+    "moira": "莫伊拉",
+    "zenyatta": "禅雅塔",
+    "juno": "朱诺",
+}
 
-    def set(self, key: str, value: Any, ttl: int):
-        """设置缓存"""
-        self._data[key] = (time.time() + ttl, value)
+# 英雄中文名到英文 key 的反向映射（用于解析用户输入）
+HERO_NAME_REVERSE_MAPPING = {cn: en for en, cn in HERO_NAME_MAPPING.items()}
 
-    def clear(self, pattern: Optional[str] = None):
-        """清理缓存，支持模糊匹配"""
-        if not pattern:
-            self._data.clear()
-            return
-        keys_to_remove = [k for k in self._data.keys() if pattern in k]
-        for key in keys_to_remove:
-            self._data.pop(key, None)
 
-    def size(self) -> int:
-        """获取缓存大小"""
-        return len(self._data)
+def _normalize_player_id(player_id: str) -> str:
+    """规范化玩家 ID，将 # 替换为 -。
 
-class RateLimiter:
-    """令牌桶限流 + 429冻结机制"""
-    def __init__(self, rate: float = 1.0, burst: int = 3):
-        self._rate = rate
-        self._burst = burst
-        self._tokens = burst
-        self._last = time.time()
-        self._freeze_until = 0.0
-        self._lock = asyncio.Lock()
+    Args:
+        player_id: 原始玩家 ID。
 
-    async def acquire(self, timeout: float = 35) -> bool:
-        """获取令牌，超时返回False"""
-        async with self._lock:
-            while True:
-                now = time.time()
-                if now >= self._freeze_until:
-                    added = (now - self._last) * self._rate
-                    self._tokens = min(self._burst, self._tokens + added)
-                    self._last = now
-                if self._tokens >= 1:
-                    self._tokens -= 1
-                    return True
-                sleep_for = min(1 / self._rate, self._freeze_until - now)
-                if sleep_for <= 0:
-                    continue
-                if timeout <= 0:
-                    return False
-                await asyncio.sleep(min(sleep_for, timeout))
-                timeout -= sleep_for
+    Returns:
+        规范化后的玩家 ID。
+    """
+    return player_id.replace("#", "-").strip()
 
-    def freeze(self, seconds: int):
-        """冻结指定秒数"""
-        self._freeze_until = max(self._freeze_until, time.time() + seconds)
 
-# ---------- API客户端（修复resp异常+超时优化） ----------
-class OWAPIClient:
-    """守望先锋API客户端（默认休闲模式）"""
-    def __init__(self, timeout: int = 60, max_retries: int = 3):  # 超时延长到60秒
-        self.timeout = aiohttp.ClientTimeout(total=timeout)
-        self.max_retries = max_retries
-        self.limiter = RateLimiter(rate=1.0, burst=3)
-        self.cache = TimedCache()
+def _get_rank_display(division: str | None, tier: int | None) -> str:
+    """获取段位显示文本。
 
-    async def _get(self, url: str, ttl: int, timeout: int = 60) -> Tuple[Optional[Dict[str, Any]], str]:
-        """基础请求方法，修复resp未赋值+超时优化"""
-        cached_data = self.cache.get(url)
-        resp = None  # 提前初始化resp，避免未赋值引用
-        deadline = time.time() + timeout
-        max_attempts = self.max_retries + 1  # 500错误多1次重试
+    Args:
+        division: 段位英文 key。
+        tier:  tier 等级（1-5）。
 
-        for attempt in range(1, max_attempts + 1):
-            # 获取限流令牌
-            ok = await self.limiter.acquire(timeout=deadline - time.time())
-            if not ok:
-                if cached_data:
-                    logger.warning(f"[OWAPI] 请求超时，返回缓存数据: {url}")
-                    return cached_data, ""
-                return None, "请求超时，当前查询人数过多或服务器响应慢"
+    Returns:
+        格式化的段位文本，如 "💎 钻石 III"。
+    """
+    if not division:
+        return "未定位"
+    rank_info = RANK_MAPPING.get(division.lower(), (division, ""))
+    tier_roman = ["", "I", "II", "III", "IV", "V"]
+    tier_str = tier_roman[tier] if tier and 1 <= tier <= 5 else ""
+    return f"{rank_info[1]} {rank_info[0]}{' ' + tier_str if tier_str else ''}"
 
-            try:
-                async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                    async with session.get(url) as resp:  # resp仅在此处赋值
-                        logger.info(f"[OWAPI] 请求: {url} | 状态码: {resp.status}")
 
-                        # 成功响应
-                        if resp.status == 200:
-                            data = await resp.json()
-                            self.cache.set(url, data, ttl)
-                            return data, ""
-                        # 404无数据
-                        elif resp.status == 404:
-                            return None, "未找到该玩家或玩家资料未公开"
-                        # 429限流
-                        elif resp.status == 429:
-                            retry_after = int(resp.headers.get("Retry-After", 5))
-                            self.limiter.freeze(retry_after)
-                            return None, f"查询过于频繁，请{retry_after}秒后再试"
-                        # 500错误处理
-                        elif resp.status == 500:
-                            logger.error(f"[OWAPI] 服务器内部错误（500）: {url} | 尝试{attempt}/{max_attempts}")
-                            if attempt == max_attempts:
-                                if cached_data:
-                                    logger.warning(f"[OWAPI] 500错误，返回缓存数据: {url}")
-                                    return cached_data, ""
-                                return None, "服务器暂时无法处理请求（可能是数据同步故障），建议1分钟后重试"
-                            await asyncio.sleep(3)
-                            continue
-                        # 其他错误
-                        else:
-                            return None, f"服务器请求异常（状态码: {resp.status}），请稍后重试"
+def _get_role_display(role_key: str) -> str:
+    """获取角色显示文本。
 
-            except asyncio.TimeoutError:
-                logger.warning(f"[OWAPI] 超时（尝试{attempt}/{max_attempts}）: {url}")
-                # 超时后直接重试，不访问resp（此时resp为None）
-                backoff = 2 ** attempt
-                if time.time() + backoff >= deadline:
-                    break
-                await asyncio.sleep(backoff)
-                continue
-            except Exception as e:
-                logger.error(f"[OWAPI] 异常（尝试{attempt}/{max_attempts}）: {str(e)} | url={url}")
-                # 其他异常也不访问resp，直接重试
-                backoff = 2 ** attempt
-                if time.time() + backoff >= deadline:
-                    break
-                await asyncio.sleep(backoff)
-                continue
+    Args:
+        role_key: 角色英文 key。
 
-            # 仅当resp存在且非500错误时，执行普通退避（避免resp为None的情况）
-            if resp and resp.status != 500:
-                backoff = 2 ** attempt
-                if time.time() + backoff >= deadline:
-                    break
-                await asyncio.sleep(backoff)
+    Returns:
+        格式化的角色文本，如 "🛡️ 坦克"。
+    """
+    role_info = ROLE_MAPPING.get(role_key.lower(), (role_key, ""))
+    return f"{role_info[1]} {role_info[0]}"
 
-        # 所有尝试失败，返回缓存（若有）
-        if cached_data:
-            logger.warning(f"[OWAPI] 所有尝试失败，返回缓存数据: {url}")
-            return cached_data, ""
-        return None, "请求失败（可能是服务器超时或故障），建议稍后重试"
 
-    def _format_tag(self, tag: str) -> str:
-        """格式化玩家标签（#替换为-）"""
-        return tag.replace("#", "-")
+def _get_hero_name_cn(hero_key: str) -> str:
+    """获取英雄中文名（用于输出显示）。
 
-    async def get_summary(self, tag: str) -> Tuple[Optional[Dict[str, Any]], str]:
-        """获取玩家概要信息（段位等）"""
-        formatted_tag = self._format_tag(tag)
-        url = f"{OW_API}/players/{formatted_tag}/summary"
-        return await self._get(url, CACHE_TTL["summary"])
+    Args:
+        hero_key: 英雄英文 key。
 
-    async def get_mode_summary(self, tag: str, gamemode: str) -> Tuple[Optional[Dict[str, Any]], str]:
-        """获取指定模式的统计信息"""
-        formatted_tag = self._format_tag(tag)
-        url = f"{OW_API}/players/{formatted_tag}/stats/summary?gamemode={gamemode}"
-        ttl_key = "comp_summary" if gamemode == "competitive" else "qp_summary"
-        return await self._get(url, CACHE_TTL[ttl_key])
+    Returns:
+        中文名或原始的 key。
+    """
+    return HERO_NAME_MAPPING.get(hero_key.lower(), hero_key)
 
-    async def get_hero_stats(self, tag: str, hero_key: str, gamemode: str = DEFAULT_MODE) -> Tuple[Optional[Dict[str, Any]], str]:
-        """获取指定英雄的详细数据（默认休闲模式）"""
-        formatted_tag = self._format_tag(tag)
-        url = f"{OW_API}/players/{formatted_tag}/stats/career?gamemode={gamemode}&hero={hero_key}"
-        return await self._get(url, CACHE_TTL["hero_stats"])
 
-    def search_hero_key(self, hero_name: str) -> Optional[str]:
-        """根据英雄中文名查找hero_key（不区分大小写）"""
-        hero_name_lower = hero_name.strip().lower()
-        for name, key in HERO_NAME_TO_KEY.items():
-            if name.lower() == hero_name_lower or key == hero_name_lower:
-                return key
+def _resolve_hero_name(hero_input: str) -> str:
+    """解析用户输入的英雄名称，支持中英文。
+
+    用户可输入中文名（如"源氏"）、英文名（如"genji"）或部分匹配。
+    返回对应的英文 hero_key。
+
+    Args:
+        hero_input: 用户输入的英雄名称。
+
+    Returns:
+        英雄英文 key（小写）。
+    """
+    hero_input = hero_input.strip()
+
+    # 1. 直接匹配英文 key（不区分大小写）
+    lowered = hero_input.lower()
+    if lowered in HERO_NAME_MAPPING:
+        return lowered
+
+    # 2. 匹配中文名
+    if hero_input in HERO_NAME_REVERSE_MAPPING:
+        return HERO_NAME_REVERSE_MAPPING[hero_input]
+
+    # 3. 尝试部分匹配中文名
+    for cn_name, en_key in HERO_NAME_REVERSE_MAPPING.items():
+        if lowered in cn_name.lower() or cn_name.lower() in lowered:
+            return en_key
+
+    # 4. 原样返回，让 API 去尝试
+    return lowered
+
+
+def _resolve_gamemode(mode_input: str) -> str | None:
+    """解析用户输入的游戏模式，支持中英文。
+
+    Args:
+        mode_input: 用户输入的游戏模式。
+
+    Returns:
+        标准化后的英文游戏模式（quickplay/competitive），
+        如果无法解析则返回 None。
+    """
+    if not mode_input:
         return None
+    return GAMEMODE_REVERSE_MAPPING.get(mode_input.strip().lower())
 
-# ---------- 格式化工具 ----------
-class FormatTool:
-    """数据格式化工具类（默认休闲模式）"""
-    @staticmethod
-    def format_division(div: Optional[str], tier: Optional[int]) -> str:
-        """格式化段位显示（含分数范围）"""
-        if not div or tier is None:
-            return "未定级"
-        cn_name = DIVISION_CN.get(div, div.upper())
-        score_range = DIVISION_SCORE.get(div, "未知分数")
-        return f"{cn_name} {tier} ({score_range}分)"
 
-    @staticmethod
-    def format_duration(sec: int) -> str:
-        """格式化时长（秒转时分）"""
-        h, m = divmod(sec // 60, 60)
-        return f"{h}小时{m}分钟"
+def _format_time_played(seconds: int | float | None) -> str:
+    """格式化游戏时间。
 
-    @staticmethod
-    def format_mode_stats(general: Dict[str, Any], mode_name: str) -> str:
-        """格式化模式统计数据"""
-        gp = general.get("games_played", 0)
-        gw = general.get("games_won", 0)
-        gl = gp - gw
-        wr = (gw / gp * 100) if gp else 0.0
-        kda = general.get("kda", 0)
-        avg = general.get("average", {}) or {}
-        
-        return (
-            f"【{mode_name}模式】\n"
-            f"📊 总场次: {gp} | 胜: {gw} | 负: {gl} | 胜率: {wr:.1f}%\n"
-            f"🎯 综合KD: {kda:.2f}\n"
-            f"⚔️ 每10分钟平均:\n"
-            f"　消灭: {avg.get('eliminations', 0):.1f} | "
-            f"死亡: {avg.get('deaths', 0):.1f}\n"
-            f"　伤害: {avg.get('damage', 0):.0f} | "
-            f"治疗: {avg.get('healing', 0):.0f}"
-        )
+    Args:
+        seconds: 游戏时间（秒）。
 
-    @staticmethod
-    def format_hero_stats(hero_data: Dict[str, Any], hero_name: str, hero_key: str, gamemode_cn: str) -> str:
-        """格式化英雄详细数据（标注模式）"""
-        hero_stats = hero_data.get(hero_key, {}) or {}
-        combat = hero_stats.get("combat", {}) or {}
-        average = hero_stats.get("average", {}) or {}
-        best = hero_stats.get("best", {}) or {}
-        game = hero_stats.get("game", {}) or {}
-        
-        total_games = game.get("games_played", 0)
-        games_won = game.get("games_won", 0)
-        win_rate = (games_won / total_games * 100) if total_games > 0 else 0.0
-        total_elim = combat.get("eliminations", 0)
-        total_damage = combat.get("hero_damage_done", 0)
-        total_deaths = combat.get("deaths", 0)
-        total_final_blows = combat.get("final_blows", 0)
-        avg_elim = average.get("eliminations_avg_per_10_min", 0)
-        avg_damage = average.get("hero_damage_done_avg_per_10_min", 0)
-        avg_deaths = average.get("deaths_avg_per_10_min", 0)
-        avg_final_blows = average.get("final_blows_avg_per_10_min", 0)
-        best_elim = best.get("eliminations_most_in_game", 0)
-        best_streak = best.get("kill_streak_best", 0)
-        best_damage = best.get("hero_damage_done_most_in_game", 0)
-        best_multikill = best.get("multikill_best", 0)
-        
-        return (
-            f"【{hero_name} {gamemode_cn}模式数据】\n"
-            f"📊 总场次: {total_games} | 胜场: {games_won} | 胜率: {win_rate:.1f}%\n"
-            f"⚔️ 战斗统计:\n"
-            f"　总消灭: {total_elim} | 总伤害: {total_damage:.0f}\n"
-            f"　总死亡: {total_deaths} | 总最终一击: {total_final_blows}\n"
-            f"🎯 每10分钟平均:\n"
-            f"　消灭: {avg_elim:.1f} | 伤害: {avg_damage:.0f}\n"
-            f"　死亡: {avg_deaths:.1f} | 最终一击: {avg_final_blows:.1f}\n"
-            f"🏆 最佳表现:\n"
-            f"　单局最高消灭: {best_elim} | 最长连杀: {best_streak}\n"
-            f"　单局最高伤害: {best_damage:.0f} | 最佳多杀: {best_multikill}"
-        )
+    Returns:
+        格式化的时间文本，如 "123小时30分钟"。
+    """
+    if not seconds:
+        return "0小时"
+    total_minutes = int(seconds) // 60
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    if hours > 0 and minutes > 0:
+        return f"{hours}小时{minutes}分钟"
+    elif hours > 0:
+        return f"{hours}小时"
+    else:
+        return f"{minutes}分钟"
 
-# ---------- 插件主类（默认休闲模式） ----------
-@register("astrbot_plugin_owcx", "tzyc", "国际服 OW2 数据查询", "v1.2.1")
-class OWStatsPlugin(Star):
-    def __init__(self,** kwargs):
-        super().__init__(kwargs.get("context"))
-        self.client = OWAPIClient()
-        self.format_tool = FormatTool()
-        # 绑定文件管理
-        self.bind_file = Path("data/ow_stats_bind.json")
-        self.bind_file.parent.mkdir(parents=True, exist_ok=True)
-        self.bind_data = self._load_bind_data()
 
-    # ---------- 绑定数据管理 ----------
-    def _load_bind_data(self) -> Dict[str, str]:
-        """加载绑定数据"""
-        if self.bind_file.exists():
-            try:
-                return json.loads(self.bind_file.read_text(encoding="utf-8"))
-            except Exception as e:
-                logger.error(f"加载绑定数据失败: {str(e)}")
-        return {}
+def _format_number(num: int | float | None) -> str:
+    """格式化数字，添加千分位分隔符。
 
-    def _save_bind_data(self):
-        """保存绑定数据"""
+    Args:
+        num: 数字。
+
+    Returns:
+        格式化后的字符串，如 "12,345"。
+    """
+    if num is None:
+        return "0"
+    if isinstance(num, float):
+        return f"{num:,.1f}" if num != int(num) else f"{int(num):,}"
+    return f"{num:,}"
+
+
+class OverwatchStatsPlugin(Star):
+    """OW战绩查询插件主类。
+
+    基于 OverFast API 提供 Overwatch 2 玩家战绩查询功能。
+
+    指令列表:
+        /owsearch <玩家名>       - 搜索玩家
+        /owsummary <玩家ID>      - 查询玩家摘要（头像、段位等）
+        /owstats <玩家ID> [模式]  - 查询玩家统计概览
+        /owcareer <玩家ID> <模式> [英雄] - 查询生涯统计
+        /owhero <英雄名>         - 查询英雄信息
+        /owheroes [角色]         - 列出所有英雄
+    """
+
+    # ===== KV 存储键前缀 =====
+    _BIND_KEY_PREFIX = "bind_"
+
+    def _get_bind_key(self, qq_id: str) -> str:
+        """生成绑定存储的 KV key。
+
+        Args:
+            qq_id: QQ 号（发送者 ID）。
+
+        Returns:
+            KV 存储 key。
+        """
+        return f"{self._BIND_KEY_PREFIX}{qq_id}"
+
+    async def _get_bound_id(self, event: AstrMessageEvent) -> str | None:
+        """获取用户绑定的 Overwatch ID。
+
+        Args:
+            event: 消息事件对象。
+
+        Returns:
+            绑定的玩家 ID，未绑定则返回 None。
+        """
+        qq_id = event.get_sender_id()
+        if not qq_id:
+            return None
         try:
-            self.bind_file.write_text(
-                json.dumps(self.bind_data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            bound_id = await self.get_kv_data(self._get_bind_key(qq_id), None)
+            return bound_id if bound_id else None
         except Exception as e:
-            logger.error(f"保存绑定数据失败: {str(e)}")
+            logger.debug(f"读取绑定信息失败: {e}")
+            return None
 
-    # ---------- 核心命令（默认休闲模式） ----------
-    @filter.command("ow")
-    async def ow_stats_query(self, event: AstrMessageEvent):
-        """战绩查询主命令（含竞技+休闲）"""
-        args = event.message_str.strip().removeprefix("ow").strip().split()
-        qq = str(event.get_sender_id())
-        tag = ""
-        platform = "pc"  # 默认PC平台
-        
-        # 解析参数
-        if len(args) == 0:
-            tag = self.bind_data.get(qq)
-            if not tag:
-                yield event.plain_result("请先绑定账号或直接查询：\n/ow 玩家#12345 [pc/console]")
-                return
-        elif len(args) == 1:
-            tag = args[0]
-        elif len(args) == 2 and args[1] in ["pc", "console"]:
-            tag = args[0]
-            platform = args[1]
-        else:
-            yield event.plain_result("参数格式错误！\n正确格式：/ow 玩家#12345 [pc/console]")
-            return
-        
-        if "#" not in tag:
-            yield event.plain_result("玩家标签格式错误！\n示例：/ow 玩家#12345")
-            return
-        
-        yield event.plain_result(f"🔍 正在查询 {tag}（{platform}平台）...")
-        
+    async def _set_bound_id(self, event: AstrMessageEvent, player_id: str) -> bool:
+        """设置用户绑定的 Overwatch ID。
+
+        Args:
+            event: 消息事件对象。
+            player_id: 要绑定的玩家 ID。
+
+        Returns:
+            是否绑定成功。
+        """
+        qq_id = event.get_sender_id()
+        if not qq_id:
+            return False
         try:
-            # 并行请求竞技+休闲数据
-            summary_task = self.client.get_summary(tag)
-            comp_task = self.client.get_mode_summary(tag, "competitive")
-            qp_task = self.client.get_mode_summary(tag, "quickplay")
-            
-            summary, summary_err = await summary_task
-            comp_stats, comp_err = await comp_task
-            qp_stats, qp_err = await qp_task
-            
-            if summary_err:
-                yield event.plain_result(f"❌ {summary_err}")
-                return
-            
-            # 解析段位+格式化数据
-            role_lines = self._parse_division_data(summary, platform)
-            season_hint = self._get_season_hint(summary, platform, comp_stats)
-            comp_block = self._format_mode_block(comp_stats, comp_err, "竞技")
-            qp_block = self._format_mode_block(qp_stats, qp_err, "休闲")
-            
-            result_msg = (
-                f"🏆 【{tag}】亚服 OW2 战绩汇总\n"
-                f"📱 平台: {'电脑端' if platform == 'pc' else '主机端'}\n"
-                f"段位信息 | {' | '.join(role_lines)}\n"
-                f"{season_hint}\n"
-                f"{comp_block}\n\n{qp_block}"
-            )
-            
-            yield event.plain_result(result_msg)
-            
+            await self.put_kv_data(self._get_bind_key(qq_id), player_id)
+            return True
         except Exception as e:
-            logger.error(f"查询异常: {str(e)}", exc_info=True)
-            yield event.plain_result("❌ 查询异常，请稍后重试")
+            logger.error(f"保存绑定信息失败: {e}")
+            return False
 
-    @filter.command("ow英雄")
-    async def ow_hero_stats(self, event: AstrMessageEvent):
-        """英雄详细数据查询（默认休闲模式+错误优化）"""
-        args = event.message_str.strip().removeprefix("ow英雄").strip().split()
-        qq = str(event.get_sender_id())
-        tag = ""
-        hero_name = ""
-        gamemode = DEFAULT_MODE
-        gamemode_cn = DEFAULT_MODE_CN
+    async def _delete_bound_id(self, event: AstrMessageEvent) -> bool:
+        """删除用户绑定的 Overwatch ID。
 
-        # 步骤1：解析模式参数
-        if len(args) >= 1 and args[-1] in MODE_CN_TO_EN.keys():
-            gamemode = MODE_CN_TO_EN[args[-1]]
-            gamemode_cn = args[-1]
-            args = args[:-1]
+        Args:
+            event: 消息事件对象。
 
-        # 步骤2：解析英雄名和玩家标签
-        if len(args) >= 2 and "#" in args[-1]:
-            hero_name = " ".join(args[:-1])
-            tag = args[-1]
-        elif len(args) == 1:
-            hero_name = args[0]
-            tag = self.bind_data.get(qq)
-            if not tag:
+        Returns:
+            是否解绑成功。
+        """
+        qq_id = event.get_sender_id()
+        if not qq_id:
+            return False
+        try:
+            await self.delete_kv_data(self._get_bind_key(qq_id))
+            return True
+        except Exception as e:
+            logger.error(f"删除绑定信息失败: {e}")
+            return False
+
+    def __init__(self, context: Context, config: AstrBotConfig | None = None) -> None:
+        """初始化插件。
+
+        Args:
+            context: AstrBot 上下文对象。
+            config: 插件配置对象。
+        """
+        super().__init__(context)
+        self.config = config or {}
+        # 配置中的游戏模式可能是中文，需要解析为英文
+        raw_gamemode = self.config.get("default_gamemode", "competitive")
+        resolved = _resolve_gamemode(raw_gamemode)
+        self.default_gamemode: str = resolved if resolved in ("quickplay", "competitive") else "competitive"
+        self.default_platform: str = self.config.get("default_platform", "pc")
+        logger.info("OW战绩查询插件已加载")
+
+    @filter.command("owsearch")
+    async def search_player(self, event: AstrMessageEvent, name: str = ""):
+        """搜索 Overwatch 2 玩家。
+
+        用法: /owsearch <玩家名>
+        示例: /owsearch TeKrop
+        """
+        if not name or not name.strip():
+            yield event.plain_result(
+                "❌ 请输入要搜索的玩家名称。\n"
+                "用法: /owsearch <玩家名>\n"
+                "示例: /owsearch TeKrop"
+            )
+            return
+
+        try:
+            async with OverFastAPIClient() as client:
+                result = await client.search_players(name.strip())
+        except ValueError as e:
+            logger.warning(f"搜索玩家失败: {e}")
+            yield event.plain_result(f"❌ 搜索失败: {e}")
+            return
+        except Exception as e:
+            logger.error(f"搜索玩家时发生错误: {e}")
+            yield event.plain_result("❌ 搜索时发生网络错误，请稍后重试。")
+            return
+
+        total = result.get("total", 0)
+        players = result.get("results", [])
+
+        if total == 0 or not players:
+            yield event.plain_result(
+                f'🔍 未找到名称包含 "{name}" 的玩家。\n'
+                f"💡 提示: 尝试使用完整的 BattleTag（如 TeKrop-2217）"
+            )
+            return
+
+        lines = [f'🔍 搜索 "{name}" 找到 {total} 个结果:', ""]
+
+        for idx, player in enumerate(players[:10], 1):
+            player_id = player.get("player_id", "未知")
+            player_name = player.get("name", "未知")
+            privacy = player.get("privacy", "unknown")
+            privacy_icon = "✅ 公开" if privacy == "public" else "🔒 私密"
+
+            lines.append(f"{idx}. {player_name}")
+            lines.append(f"   隐私: {privacy_icon}")
+            lines.append("")
+
+        if total > 10:
+            lines.append(f"... 还有 {total - 10} 个结果未显示")
+            lines.append("")
+
+        lines.append("💡 使用 /owsummary <玩家ID> 查看详细信息")
+        lines.append("   支持直接使用 #，如 /owsummary TeKrop#2217")
+
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("owsummary")
+    async def player_summary(self, event: AstrMessageEvent, player_id: str = ""):
+        """查询玩家摘要信息（头像、竞技段位等）。
+
+        用法: /owsummary [玩家ID]
+        示例: /owsummary TeKrop#2217
+        说明: 支持直接使用 #，会自动替换；省略 ID 则查询绑定的账号
+        """
+        # 未传入 ID，尝试获取绑定的 ID
+        if not player_id or not player_id.strip():
+            bound_id = await self._get_bound_id(event)
+            if not bound_id:
                 yield event.plain_result(
-                    f"请先绑定账号或指定查询：\n"
-                    f"1. 已绑定：/ow英雄 英雄名 [竞技/休闲]（默认{DEFAULT_MODE_CN}）\n"
-                    f"2. 未绑定：/ow英雄 英雄名 玩家#12345 [竞技/休闲]"
+                    "❌ 你还没有绑定 Overwatch ID。\n"
+                    "用法: /owsummary <玩家ID>\n"
+                    "示例: /owsummary TeKrop#2217\n"
+                    "💡 或使用 /owbind <玩家ID> 绑定你的账号，之后可直接用 /owsummary 查询"
                 )
                 return
+            player_id = bound_id
+
+        player_id = _normalize_player_id(player_id)
+
+        try:
+            async with OverFastAPIClient() as client:
+                data = await client.get_player_summary(player_id)
+        except ValueError as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "未找到" in err_str or "404" in err_str:
+                yield event.plain_result(
+                    f"❌ 未找到玩家 `{player_id}`。\n"
+                    f"💡 请检查玩家 ID 是否正确，或将 # 替换为 -。\n"
+                    f"   使用 /owsearch <玩家名> 来搜索玩家。"
+                )
+                return
+            logger.warning(f"获取玩家摘要失败: {e}")
+            yield event.plain_result(f"❌ 获取玩家信息失败: {e}")
+            return
+        except Exception as e:
+            logger.error(f"获取玩家摘要时发生错误: {e}")
+            yield event.plain_result("❌ 获取玩家信息时出错，请稍后重试。")
+            return
+
+        username = data.get("username", player_id)
+        avatar_url = data.get("avatar", "")
+        endorsement = data.get("endorsement", {})
+        endorsement_level = endorsement.get("level", 0) if isinstance(endorsement, dict) else 0
+        title = data.get("title", "")
+
+        # 构建竞技段位信息
+        rank_lines = []
+        comp_ranks = data.get("competitive_ranks", {})
+        pc_ranks = comp_ranks.get("pc", {}) if isinstance(comp_ranks, dict) else {}
+
+        if pc_ranks:
+            for role_key in ["tank", "damage", "support"]:
+                role_data = pc_ranks.get(role_key)
+                role_display = COMPETITIVE_ICONS.get(role_key, "") + " " + ROLE_MAPPING.get(role_key, (role_key, ""))[0]
+
+                if role_data and isinstance(role_data, dict):
+                    division = role_data.get("division")
+                    tier = role_data.get("tier")
+                    if division:
+                        rank_display = _get_rank_display(division, tier)
+                        rank_lines.append(f"   {role_display}: {rank_display}")
+                    else:
+                        rank_lines.append(f"   {role_display}: 未定位")
+                else:
+                    rank_lines.append(f"   {role_display}: 未定位")
         else:
-            yield event.plain_result(
-                "参数格式错误！\n正确格式：\n"
-                f"1. 已绑定：/ow英雄 英雄名 [竞技/休闲]（默认{DEFAULT_MODE_CN}）\n"
-                f"2. 未绑定：/ow英雄 英雄名 玩家#12345 [竞技/休闲]\n"
-                f"示例：/ow英雄 源氏（默认休闲）| /ow英雄 源氏 竞技"
-            )
-            return
-        
-        # 步骤3：查找英雄key
-        hero_key = self.client.search_hero_key(hero_name)
-        if not hero_key:
-            yield event.plain_result(f"❌ 未找到英雄：{hero_name}\n支持英雄：{', '.join(HERO_NAME_TO_KEY.keys())}")
-            return
-        
-        # 步骤4：请求数据
-        logger.info(f"[OW英雄查询] tag={tag}, hero={hero_name}, mode={gamemode_cn}")
-        yield event.plain_result(f"🔍 正在查询 {tag} 的 {hero_name} {gamemode_cn}模式数据...")
-        hero_data, err_msg = await self.client.get_hero_stats(tag, hero_key, gamemode)
-        
-        # 步骤5：错误处理（区分超时和其他错误）
-        if err_msg:
-            # 超时场景提示优化
-            if "请求超时" in err_msg:
-                err_msg += f"\n💡 提示：服务器响应较慢，可1分钟后再试，或切换竞技模式（/ow英雄 {hero_name} 竞技）"
-            elif gamemode == "quickplay" and "服务器暂时无法处理请求" in err_msg:
-                err_msg += f"\n💡 备选方案：尝试查询 {hero_name} 竞技模式，命令：/ow英雄 {hero_name} 竞技"
-            logger.error(f"[OW英雄查询失败] tag={tag}, hero={hero_name}, mode={gamemode_cn} | 错误: {err_msg}")
-            yield event.plain_result(f"❌ {err_msg}")
-            return
-        if not hero_data:
-            empty_msg = f"❌ 未查询到 {hero_name} 的 {gamemode_cn}模式数据"
-            if gamemode == "quickplay":
-                empty_msg += f"\n💡 可尝试查询竞技模式：/ow英雄 {hero_name} 竞技"
-            yield event.plain_result(empty_msg)
-            return
-        
-        # 步骤6：数据判空与格式化
-        hero_specific_data = hero_data.get(hero_key, {}) or {}
-        game_stats = hero_specific_data.get("game", {}) or {}
-        total_games = game_stats.get("games_played", 0)
-        combat_stats = hero_specific_data.get("combat", {}) or {}
-        has_combat_data = any(key in combat_stats for key in ["eliminations", "hero_damage_done"])
-        
-        if total_games == 0 and not has_combat_data:
-            no_data_msg = (
-                f"✅ API请求成功（状态码200）\n"
-                f"❌ {tag} 未使用 {hero_name} 参与{gamemode_cn}模式对战\n"
-                f"（提示：场次为0，无战斗数据）"
-            )
-            if gamemode == "quickplay":
-                no_data_msg += f"\n💡 可尝试查询竞技模式：/ow英雄 {hero_name} 竞技"
-            yield event.plain_result(no_data_msg)
-            return
-        elif total_games > 0 and not has_combat_data:
-            yield event.plain_result(
-                f"✅ API请求成功（状态码200）\n"
-                f"⚠️ {tag} 使用 {hero_name} 参与{total_games}场{gamemode_cn}模式对战\n"
-                f"❌ 暂未获取到该英雄的战斗数据（可能数据未同步）"
-            )
-            return
-        
-        # 步骤7：输出结果
-        hero_msg = self.format_tool.format_hero_stats(hero_data, hero_name, hero_key, gamemode_cn)
-        yield event.plain_result(hero_msg)
+            rank_lines.append("   暂无竞技段位数据")
 
-    # ---------- 绑定管理命令 ----------
-    @filter.command("ow绑定")
-    async def ow_bind_account(self, event: AstrMessageEvent):
-        """绑定玩家账号（提示默认休闲）"""
-        arg = event.message_str.strip().removeprefix("ow绑定").strip()
-        qq = str(event.get_sender_id())
-        
-        if not arg or "#" not in arg:
-            yield event.plain_result("绑定格式错误！\n正确格式：/ow绑定 玩家#12345")
-            return
-        
-        self.bind_data[qq] = arg
-        self._save_bind_data()
-        yield event.plain_result(
-            f"✅ 成功绑定账号：{arg}\n"
-            f"📌 后续查询默认{DEFAULT_MODE_CN}模式：\n"
-            f"　- 查战绩：/ow\n"
-            f"　- 查英雄：/ow英雄 英雄名（如/ow英雄 源氏）\n"
-            f"　- 查竞技：/ow英雄 英雄名 竞技"
-        )
+        lines = [
+            f"👤 {username}",
+        ]
+        if title:
+            lines.append(f"🏷️ 头衔: {title}")
+        lines.append(f"⭐ 赞赏等级: {endorsement_level}")
+        lines.append("🏆 竞技段位:")
+        lines.extend(rank_lines)
 
-    @filter.command("ow解绑")
-    async def ow_unbind_account(self, event: AstrMessageEvent):
-        """解绑玩家账号"""
-        qq = str(event.get_sender_id())
-        if qq not in self.bind_data:
-            yield event.plain_result("❌ 您尚未绑定任何账号")
-            return
-        
-        old_tag = self.bind_data.pop(qq)
-        self._save_bind_data()
-        yield event.plain_result(f"✅ 成功解绑账号：{old_tag}")
+        result_text = "\n".join(lines)
 
-    # ---------- 管理员专属命令 ----------
-    @filter.command("ow清理缓存")
-    @filter.permission_type(PermissionType.ADMIN)
-    async def ow_clear_cache(self, event: AstrMessageEvent):
-        """清理缓存（仅管理员）"""
-        args = event.message_str.strip().removeprefix("ow清理缓存").strip()
-        cache_size = self.client.cache.size()
-        
-        if args == "全部":
-            self.client.cache.clear()
-            yield event.plain_result(f"✅ 已清理全部缓存（共{cache_size}条）")
+        # 如果有头像，发送图片 + 文本
+        if avatar_url:
+            import astrbot.api.message_components as Comp
+
+            chain = [
+                Comp.Image.fromURL(avatar_url),
+                Comp.Plain(result_text),
+            ]
+            yield event.chain_result(chain)
         else:
-            self.client.cache.clear("players")
-            yield event.plain_result(f"✅ 已清理玩家数据缓存（共{cache_size}条）")
+            yield event.plain_result(result_text)
 
-    # ---------- 帮助与状态命令 ----------
-    @filter.command("ow帮助")
-    async def ow_help(self, event: AstrMessageEvent):
-        """显示帮助信息（默认休闲模式）"""
-        help_msg = (
-            f"🎮 守望先锋2 亚服战绩查询插件（v1.2.1）\n"
-            f"==============================\n"
-            f"📌 说明：默认查询{DEFAULT_MODE_CN}模式，可显式指定“竞技”切换\n"
-            f"🔍 基础查询：\n"
-            f"  /ow 玩家#12345 [pc/console] - 查指定玩家战绩（含竞技+休闲）\n"
-            f"  /ow - 查已绑定账号战绩\n"
-            f"\n"
-            f"🦸 英雄查询（默认{DEFAULT_MODE_CN}）：\n"
-            f"  1. 已绑定账号：/ow英雄 英雄名 [竞技/休闲]\n"
-            f"     示例：/ow英雄 源氏（默认休闲）| /ow英雄 源氏 竞技\n"
-            f"  2. 未绑定账号：/ow英雄 英雄名 玩家#12345 [竞技/休闲]\n"
-            f"     示例：/ow英雄 安娜 玩家#12345 休闲\n"
-            f"\n"
-            f"🔧 账号管理：\n"
-            f"  /ow绑定 玩家#12345 - 绑定账号\n"
-            f"  /ow解绑 - 解绑账号\n"
-            f"\n"
-            f"💡 管理员命令：\n"
-            f"  /ow清理缓存 [全部] - 清理查询缓存\n"
-            f"📌 提示：若{DEFAULT_MODE_CN}模式超时，可延长等待或切换竞技模式"
-        )
-        yield event.plain_result(help_msg)
+    @filter.command("owstats")
+    async def player_stats(
+        self,
+        event: AstrMessageEvent,
+        player_id: str = "",
+        gamemode: str = "",
+    ):
+        """查询玩家统计概览（胜率、KDA等）。
 
-    @filter.command("ow状态")
-    async def ow_status(self, event: AstrMessageEvent):
-        """显示插件状态（默认模式标注）"""
-        test_data, _ = await self.client.get_summary("TeKrop-2217")
-        api_status = "✅ 正常" if test_data else "❌ 异常"
-        
-        status_msg = (
-            "🔧 守望先锋插件状态\n"
-            "==================\n"
-            f"API 连通性: {api_status}\n"
-            f"已绑定账号: {len(self.bind_data)} 个\n"
-            f"缓存数据量: {self.client.cache.size()} 条\n"
-            f"插件版本: v1.2.1\n"
-            f"默认模式: {DEFAULT_MODE_CN}（英雄查询默认）\n"
-            f"超时配置: 60秒（减少超时概率）\n"
-            f"支持功能: 基础战绩查询、英雄数据查询（竞技+休闲）\n"
-            f"支持英雄数: {len(HERO_NAME_TO_KEY)} 个"
-        )
-        yield event.plain_result(status_msg)
+        用法: /owstats [玩家ID] [游戏模式]
+        游戏模式: 快速、竞技（默认）
+        示例: /owstats TeKrop#2217 竞技
+        说明: 省略 ID 则查询绑定的账号
+        """
+        # 未传入 ID，尝试获取绑定的 ID
+        if not player_id or not player_id.strip():
+            bound_id = await self._get_bound_id(event)
+            if not bound_id:
+                yield event.plain_result(
+                    "❌ 你还没有绑定 Overwatch ID。\n"
+                    "用法: /owstats <玩家ID> [游戏模式]\n"
+                    "示例: /owstats TeKrop#2217 竞技\n"
+                    "游戏模式: 快速(quickplay)、竞技(competitive，默认)\n"
+                    "💡 或使用 /owbind <玩家ID> 绑定你的账号，之后可直接用 /owstats 查询"
+                )
+                return
+            player_id = bound_id
 
-    # ---------- 内部工具方法 ----------
-    def _parse_division_data(self, summary: Dict[str, Any], platform: str) -> List[str]:
-        """解析段位数据（双重判空）"""
-        competitive = summary.get("competitive", {}) or {}
-        platform_data = competitive.get(platform, {}) or {}
-        
-        role_lines = []
-        for role in ["tank", "damage", "support"]:
-            role_data = platform_data.get(role, {}) or {}
-            div = role_data.get("division")
-            tier = role_data.get("tier")
-            role_cn = ROLE_CN[role]
-            role_lines.append(f"{role_cn}: {self.format_tool.format_division(div, tier)}")
-        
-        return role_lines
+        player_id = _normalize_player_id(player_id)
+        gamemode = _resolve_gamemode(gamemode or self.default_gamemode)
 
-    def _get_season_hint(self, summary: Dict[str, Any], platform: str, comp_stats: Optional[Dict[str, Any]]) -> str:
-        """获取上赛季段位提示"""
-        competitive = summary.get("competitive", {}) or {}
-        platform_data = competitive.get(platform, {}) or {}
-        
-        season_lines = []
-        comp_gp = comp_stats.get("general", {}).get("games_played", 0) if (comp_stats and comp_stats.get("general")) else 0
-        if comp_gp == 0:
-            for role in ["tank", "damage", "support"]:
-                role_data = platform_data.get(role, {}) or {}
-                if role_data.get("season") and role_data.get("division") and role_data.get("tier") is not None:
-                    div = role_data["division"]
-                    tier = role_data["tier"]
-                    season = role_data["season"]
-                    role_cn = ROLE_CN[role]
-                    season_lines.append(f"{role_cn}: {self.format_tool.format_division(div, tier)} (S{season})")
-        
-        return f"📌 上赛季段位 | {' | '.join(season_lines)}\n" if season_lines else ""
+        if gamemode not in ("quickplay", "competitive"):
+            yield event.plain_result(
+                "❌ 游戏模式无效。可选: 快速(quickplay)、竞技(competitive)\n"
+                "用法: /owstats <玩家ID> [快速|竞技]"
+            )
+            return
 
-    def _format_mode_block(self, stats: Optional[Dict[str, Any]], err_msg: str, mode_name: str) -> str:
-        """格式化模式数据块"""
-        if err_msg:
-            return f"【{mode_name}模式】\n❌ {err_msg}"
-        if not stats:
-            return f"【{mode_name}模式】\n📊 暂无对战数据"
-        general_stats = stats.get("general", {}) or {}
-        total_games = general_stats.get("games_played", 0)
-        if total_games == 0:
-            return f"【{mode_name}模式】\n📊 未参与过该模式对战"
-        
-        return self.format_tool.format_mode_stats(general_stats, mode_name)
+        try:
+            async with OverFastAPIClient() as client:
+                data = await client.get_player_stats_summary(
+                    player_id, gamemode=gamemode, platform=self.default_platform
+                )
+        except ValueError as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "404" in err_str:
+                yield event.plain_result(
+                    f"❌ 未找到玩家 `{player_id}` 或其资料为私密状态。\n"
+                    f"💡 请将 Overwatch 资料设为公开后重试。"
+                )
+                return
+            yield event.plain_result(f"❌ 获取统计失败: {e}")
+            return
+        except Exception as e:
+            logger.error(f"获取玩家统计时发生错误: {e}")
+            yield event.plain_result("❌ 获取统计信息时出错，请稍后重试。")
+            return
 
-    async def terminate(self):
-        """插件卸载时保存数据"""
-        logger.info("OW2插件正在卸载，保存绑定数据...")
-        self._save_bind_data()
-        logger.info("OW2插件卸载完成")
+        general = data.get("general", {}) if isinstance(data, dict) else {}
+        if not general:
+            yield event.plain_result(
+                f"📊 玩家 `{player_id}` | {GAMEMODE_MAPPING.get(gamemode, gamemode)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"暂无统计数据。"
+            )
+            return
+
+        games_played = general.get("games_played", 0) or 0
+        games_won = general.get("games_won", 0) or 0
+        games_lost = general.get("games_lost", 0) or 0
+        winrate = general.get("winrate", 0) or 0
+        kda = general.get("kda", 0) or 0
+        eliminations_avg = general.get("eliminations_avg", 0) or 0
+        deaths_avg = general.get("deaths_avg", 0) or 0
+        damage_avg = general.get("damage_avg", 0) or 0
+        healing_avg = general.get("healing_avg", 0) or 0
+        time_played = general.get("time_played", 0) or 0
+
+        lines = [
+            f"📊 {player_id} | {GAMEMODE_MAPPING.get(gamemode, gamemode)}",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"🎮 场次: {_format_number(games_played)} ({_format_number(games_won)}胜/{_format_number(games_lost)}负)",
+            f"📈 胜率: {winrate}%",
+            f"⚔️ KDA: {kda:.2f}" if kda else "⚔️ KDA: N/A",
+            f"💥 消灭: {_format_number(eliminations_avg)}/场" if eliminations_avg else "💥 消灭: N/A",
+            f"💀 死亡: {_format_number(deaths_avg)}/场" if deaths_avg else "💀 死亡: N/A",
+            f"🔥 伤害: {_format_number(damage_avg)}/场" if damage_avg else "🔥 伤害: N/A",
+            f"💚 治疗: {_format_number(healing_avg)}/场" if healing_avg else "💚 治疗: N/A",
+            f"⏱️ 游戏时间: {_format_time_played(time_played)}",
+        ]
+
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("owcareer")
+    async def player_career(
+        self,
+        event: AstrMessageEvent,
+        player_id: str = "",
+        gamemode: str = "",
+        hero: str = "",
+    ):
+        """查询玩家生涯统计（按英雄详细数据）。
+
+        用法: /owcareer [玩家ID] <游戏模式> [英雄名]
+        游戏模式: 快速、竞技
+        英雄名: 可选，支持中文（如 源氏、安娜）或英文（如 genji, ana）
+        示例:
+            /owcareer TeKrop#2217 竞技
+            /owcareer TeKrop#2217 竞技 源氏
+            /owcareer 竞技 源氏        (已绑定ID后)
+        """
+        # 未传入 ID，尝试获取绑定的 ID
+        if not player_id or not player_id.strip():
+            bound_id = await self._get_bound_id(event)
+            if not bound_id:
+                yield event.plain_result(
+                    "❌ 你还没有绑定 Overwatch ID。\n"
+                    "用法: /owcareer <玩家ID> <游戏模式> [英雄名]\n"
+                    "示例: /owcareer TeKrop#2217 竞技 源氏\n"
+                    "💡 或使用 /owbind <玩家ID> 绑定你的账号，之后可直接用 /owcareer 竞技 源氏 查询"
+                )
+                return
+            player_id = bound_id
+        # player_id 传入但 gamemode 为空，说明只传了 gamemode（已绑定 ID 的快捷用法）
+        elif not gamemode or not gamemode.strip():
+            # 尝试将 player_id 当作 gamemode 解析
+            resolved = _resolve_gamemode(player_id)
+            if resolved in ("quickplay", "competitive"):
+                bound_id = await self._get_bound_id(event)
+                if bound_id:
+                    gamemode = player_id
+                    player_id = bound_id
+                else:
+                    yield event.plain_result(
+                        "❌ 你还没有绑定 Overwatch ID。\n"
+                        "用法: /owcareer <玩家ID> <游戏模式> [英雄名]\n"
+                        "💡 使用 /owbind <玩家ID> 绑定后可直接 /owcareer 竞技 源氏"
+                    )
+                    return
+
+        resolved_mode = _resolve_gamemode(gamemode)
+        if not resolved_mode or resolved_mode not in ("quickplay", "competitive"):
+            yield event.plain_result(
+                "❌ 请输入有效的游戏模式。\n"
+                "用法: /owcareer <玩家ID> <游戏模式> [英雄名]\n"
+                "游戏模式: 快速(quickplay)、竞技(competitive)"
+            )
+            return
+
+        player_id = _normalize_player_id(player_id)
+        gamemode = resolved_mode
+        hero_key = _resolve_hero_name(hero) if hero else None
+
+        try:
+            async with OverFastAPIClient() as client:
+                data = await client.get_player_career_stats(
+                    player_id,
+                    gamemode=gamemode,
+                    platform=self.default_platform,
+                    hero=hero_key,
+                )
+        except ValueError as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "404" in err_str:
+                yield event.plain_result(
+                    f"❌ 未找到玩家 `{player_id}` 或其资料为私密状态。\n"
+                    f"💡 请将 Overwatch 资料设为公开后重试。"
+                )
+                return
+            yield event.plain_result(f"❌ 获取生涯统计失败: {e}")
+            return
+        except Exception as e:
+            logger.error(f"获取生涯统计时发生错误: {e}")
+            yield event.plain_result("❌ 获取生涯统计时出错，请稍后重试。")
+            return
+
+        if not data or not isinstance(data, dict):
+            yield event.plain_result(
+                f"📈 玩家 `{player_id}` | {GAMEMODE_MAPPING.get(gamemode, gamemode)}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"暂无生涯统计数据。"
+            )
+            return
+
+        # 标题
+        hero_filter = f" | 英雄: {_get_hero_name_cn(hero_key)}" if hero_key else ""
+        lines = [
+            f"📈 {player_id} | {GAMEMODE_MAPPING.get(gamemode, gamemode)}{hero_filter}",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        # 遍历每个英雄的数据
+        hero_count = 0
+        for hero_key_raw, categories in data.items():
+            if not isinstance(categories, dict):
+                continue
+
+            hero_name = _get_hero_name_cn(hero_key_raw)
+            hero_count += 1
+
+            lines.append(f"\n🦸 {hero_name}")
+
+            # 显示 combat 和 game 类别的关键数据
+            combat = categories.get("combat", {})
+            if combat:
+                eliminations = combat.get("eliminations")
+                deaths = combat.get("deaths")
+                kd = ""
+                if eliminations and deaths and int(deaths) > 0:
+                    kd_ratio = float(eliminations) / float(deaths)
+                    kd = f" (K/D: {kd_ratio:.2f})"
+                elif eliminations:
+                    kd = f" (K/D: ∞)"
+
+                if eliminations is not None:
+                    lines.append(f"   💥 消灭: {_format_number(eliminations)}{kd}")
+                if deaths is not None:
+                    lines.append(f"   💀 死亡: {_format_number(deaths)}")
+                damage_done = combat.get("damage_done")
+                if damage_done is not None:
+                    lines.append(f"   🔥 伤害: {_format_number(damage_done)}")
+                healing_done = combat.get("healing_done")
+                if healing_done is not None:
+                    lines.append(f"   💚 治疗: {_format_number(healing_done)}")
+
+            game_stats = categories.get("game", {})
+            if game_stats:
+                games_played = game_stats.get("games_played")
+                games_won = game_stats.get("games_won")
+                if games_played is not None and games_won is not None:
+                    games_lost = (games_played or 0) - (games_won or 0)
+                    winrate = (
+                        (games_won / games_played * 100)
+                        if games_played > 0
+                        else 0
+                    )
+                    lines.append(
+                        f"   🎮 场次: {_format_number(games_played)} "
+                        f"({_format_number(games_won)}胜/{_format_number(games_lost)}负, "
+                        f"{winrate:.1f}%)"
+                    )
+                time_played = game_stats.get("time_played")
+                if time_played:
+                    lines.append(f"   ⏱️ 时间: {_format_time_played(time_played)}")
+
+            # 只显示前 8 个英雄（避免消息过长）
+            if hero_count >= 8:
+                remaining = len(data) - 8
+                if remaining > 0:
+                    lines.append(f"\n... 还有 {remaining} 个英雄的数据未显示")
+                break
+
+        if hero_count == 0:
+            lines.append("暂无生涯统计数据。")
+
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("owhero")
+    async def hero_info(self, event: AstrMessageEvent, hero_name: str = ""):
+        """查询英雄详细信息。
+
+        用法: /owhero <英雄名>
+        英雄名支持中文（如 源氏、安娜）或英文（如 genji, ana）
+        示例: /owhero 源氏, /owhero ana
+        """
+        if not hero_name or not hero_name.strip():
+            yield event.plain_result(
+                "❌ 请输入英雄名称。\n"
+                "用法: /owhero <英雄名>\n"
+                "英雄名支持中文或英文，如: /owhero 源氏, /owhero genji\n"
+                "使用 /owheroes 查看所有英雄列表。"
+            )
+            return
+
+        hero_key = _resolve_hero_name(hero_name)
+
+        try:
+            async with OverFastAPIClient() as client:
+                data = await client.get_hero_info(hero_key)
+        except ValueError as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "404" in err_str:
+                yield event.plain_result(
+                    f"❌ 未找到英雄 `{hero_key}`。\n"
+                    f"💡 使用 /owheroes 查看所有可用的英雄名称。"
+                )
+                return
+            yield event.plain_result(f"❌ 获取英雄信息失败: {e}")
+            return
+        except Exception as e:
+            logger.error(f"获取英雄信息时发生错误: {e}")
+            yield event.plain_result("❌ 获取英雄信息时出错，请稍后重试。")
+            return
+
+        name = data.get("name", hero_key)
+        description = data.get("description", "")
+        role = data.get("role", "")
+        health = data.get("hitpoints", {}).get("health", 0) if isinstance(data.get("hitpoints"), dict) else 0
+        armor = data.get("hitpoints", {}).get("armor", 0) if isinstance(data.get("hitpoints"), dict) else 0
+        shields = data.get("hitpoints", {}).get("shields", 0) if isinstance(data.get("hitpoints"), dict) else 0
+        portrait = data.get("portrait", "")
+        abilities = data.get("abilities", [])
+        story_summary = ""
+        if isinstance(data.get("story"), dict):
+            story_summary = data["story"].get("summary", "")
+
+        lines = [
+            f"🦸 {name}",
+            f"角色: {_get_role_display(role) if role else '未知'}",
+            f"生命: {health}{' | 护甲: ' + str(armor) if armor else ''}{' | 护盾: ' + str(shields) if shields else ''}",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        # 技能列表
+        if abilities:
+            lines.append("📋 技能:")
+            for ability in abilities[:8]:
+                if isinstance(ability, dict):
+                    ability_name = ability.get("name", "")
+                    ability_desc = ability.get("description", "")
+                    # 截断过长的描述
+                    if len(ability_desc) > 80:
+                        ability_desc = ability_desc[:77] + "..."
+                    lines.append(f"   • {ability_name}: {ability_desc}")
+
+        # 背景故事
+        if story_summary:
+            story_text = story_summary
+            if len(story_text) > 200:
+                story_text = story_text[:197] + "..."
+            lines.append("")
+            lines.append("📖 背景故事:")
+            lines.append(f"   {story_text}")
+
+        result_text = "\n".join(lines)
+
+        # 如果有头像图片，发送图片 + 文本
+        if portrait:
+            import astrbot.api.message_components as Comp
+
+            chain = [
+                Comp.Image.fromURL(portrait),
+                Comp.Plain(result_text),
+            ]
+            yield event.chain_result(chain)
+        else:
+            yield event.plain_result(result_text)
+
+    @filter.command("owheroes")
+    async def list_heroes_cmd(self, event: AstrMessageEvent, role: str = ""):
+        """列出所有英雄，可按角色筛选。
+
+        用法: /owheroes [角色]
+        角色: 坦克(tank)、输出(damage)、支援(support)
+        示例:
+            /owheroes
+            /owheroes 坦克
+        """
+        role_filter = role.lower().strip() if role else None
+
+        # 支持中文角色名
+        ROLE_CN_TO_EN = {
+            "坦克": "tank",
+            "tank": "tank",
+            "输出": "damage",
+            "damage": "damage",
+            "支援": "support",
+            "support": "support",
+        }
+        if role_filter:
+            resolved_role = ROLE_CN_TO_EN.get(role_filter)
+            if not resolved_role:
+                yield event.plain_result(
+                    "❌ 角色参数无效。可选: 坦克(tank)、输出(damage)、支援(support)\n"
+                    "用法: /owheroes [坦克|输出|支援]"
+                )
+                return
+            role_filter = resolved_role
+
+        try:
+            async with OverFastAPIClient() as client:
+                heroes = await client.list_heroes(role=role_filter)
+        except Exception as e:
+            logger.error(f"获取英雄列表时发生错误: {e}")
+            yield event.plain_result("❌ 获取英雄列表时出错，请稍后重试。")
+            return
+
+        if not heroes:
+            yield event.plain_result("暂无英雄数据。")
+            return
+
+        # 按角色分组
+        grouped: dict[str, list[str]] = {"tank": [], "damage": [], "support": []}
+        for hero in heroes:
+            if isinstance(hero, dict):
+                h_key = hero.get("key", "")
+                h_name = hero.get("name", h_key)
+                h_role = hero.get("role", "")
+                cn_name = _get_hero_name_cn(h_key)
+                display = f"{cn_name} ({h_name})" if cn_name != h_key else h_name
+                if h_role in grouped:
+                    grouped[h_role].append(display)
+                else:
+                    grouped.setdefault("other", []).append(display)
+
+        lines = ["🦸 Overwatch 英雄列表", "━━━━━━━━━━━━━━━━━━━━"]
+
+        for role_key in ["tank", "damage", "support"]:
+            role_heroes = grouped.get(role_key, [])
+            if not role_heroes:
+                continue
+            role_display = _get_role_display(role_key)
+            lines.append(f"\n{role_display} ({len(role_heroes)}):")
+            # 每行显示 4 个英雄
+            chunk_size = 4
+            for i in range(0, len(role_heroes), chunk_size):
+                chunk = role_heroes[i : i + chunk_size]
+                lines.append("   " + "、".join(chunk))
+
+        lines.append("")
+        lines.append("💡 使用 /owhero <英雄key> 查看英雄详情")
+        lines.append("   示例: /owhero genji, /owhero ana")
+
+        yield event.plain_result("\n".join(lines))
+
+    # ===== ID 绑定相关指令 =====
+
+    @filter.command("owbind")
+    async def bind_id(self, event: AstrMessageEvent, player_id: str = ""):
+        """绑定你的 Overwatch ID 到当前 QQ 号。
+
+        绑定后可直接使用 /owme、/owsummary、/owstats、/owcareer 等指令查询自己的数据。
+
+        用法: /owbind <玩家ID>
+        示例: /owbind TeKrop#2217
+        """
+        if not player_id or not player_id.strip():
+            yield event.plain_result(
+                "❌ 请输入要绑定的玩家 ID。\n"
+                "用法: /owbind <玩家ID>\n"
+                "示例: /owbind TeKrop#2217\n"
+                "💡 你的 Overwatch ID 就是你的 BattleTag（如 玩家名#1234）"
+            )
+            return
+
+        player_id = _normalize_player_id(player_id)
+        qq_id = event.get_sender_id()
+        user_name = event.get_sender_name()
+
+        # 验证玩家 ID 是否有效（尝试查询一次）
+        try:
+            async with OverFastAPIClient() as client:
+                data = await client.get_player_summary(player_id)
+        except ValueError as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "404" in err_str:
+                yield event.plain_result(
+                    f"❌ 未找到玩家 `{player_id}`，请检查 ID 是否正确。\n"
+                    f"💡 提示: ID 区分大小写，确保你的 BattleTag 输入正确。\n"
+                    f"   可使用 /owsearch <玩家名> 搜索确认。"
+                )
+                return
+            logger.warning(f"验证玩家 ID 失败: {e}")
+            # 网络问题时不阻止绑定，继续
+        except Exception as e:
+            logger.warning(f"验证玩家 ID 时网络错误: {e}")
+            # 网络问题时不阻止绑定，继续
+
+        # 保存绑定
+        success = await self._set_bound_id(event, player_id)
+        if success:
+            yield event.plain_result(
+                f"✅ {user_name} 已成功绑定 Overwatch ID: `{player_id}`\n"
+                f"\n"
+                f"现在你可以直接使用以下快捷指令:\n"
+                f"  /owme          - 查看自己的摘要信息\n"
+                f"  /owsummary     - 查看自己的摘要信息\n"
+                f"  /owstats [模式] - 查看自己的统计概览\n"
+                f"  /owcareer <模式> [英雄] - 查看自己的生涯统计\n"
+                f"\n"
+                f"如需更换绑定，直接再次使用 /owbind 即可。\n"
+                f"如需解绑，使用 /owunbind 。"
+            )
+        else:
+            yield event.plain_result("❌ 绑定失败，请稍后重试。")
+
+    @filter.command("owunbind")
+    async def unbind_id(self, event: AstrMessageEvent):
+        """解绑当前 QQ 号绑定的 Overwatch ID。
+
+        用法: /owunbind
+        """
+        qq_id = event.get_sender_id()
+        user_name = event.get_sender_name()
+
+        # 检查是否已绑定
+        bound_id = await self._get_bound_id(event)
+        if not bound_id:
+            yield event.plain_result(
+                f"❌ {user_name} 你还没有绑定任何 Overwatch ID。\n"
+                f"💡 使用 /owbind <玩家ID> 来绑定你的账号。"
+            )
+            return
+
+        success = await self._delete_bound_id(event)
+        if success:
+            yield event.plain_result(
+                f"✅ {user_name} 已成功解绑 Overwatch ID: `{bound_id}`\n"
+                f"💡 需要重新绑定时使用 /owbind <玩家ID>"
+            )
+        else:
+            yield event.plain_result("❌ 解绑失败，请稍后重试。")
+
+    @filter.command("owme")
+    async def quick_summary(self, event: AstrMessageEvent):
+        """快捷查询自己绑定的 Overwatch 账号摘要信息。
+
+        用法: /owme
+        说明: 需要先使用 /owbind 绑定账号
+        """
+        bound_id = await self._get_bound_id(event)
+        user_name = event.get_sender_name()
+
+        if not bound_id:
+            yield event.plain_result(
+                f"❌ {user_name} 你还没有绑定 Overwatch ID。\n"
+                f"💡 使用 /owbind <玩家ID> 绑定你的账号\n"
+                f"   示例: /owbind TeKrop#2217"
+            )
+            return
+
+        # 复用 player_summary 的逻辑，但使用快捷查询的提示
+        player_id = _normalize_player_id(bound_id)
+
+        try:
+            async with OverFastAPIClient() as client:
+                data = await client.get_player_summary(player_id)
+        except ValueError as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "未找到" in err_str or "404" in err_str:
+                yield event.plain_result(
+                    f"❌ 未找到绑定的玩家 `{player_id}`。\n"
+                    f"💡 该账号可能已改名或资料已私密，请使用 /owbind 重新绑定。"
+                )
+                return
+            logger.warning(f"获取玩家摘要失败: {e}")
+            yield event.plain_result(f"❌ 获取玩家信息失败: {e}")
+            return
+        except Exception as e:
+            logger.error(f"获取玩家摘要时发生错误: {e}")
+            yield event.plain_result("❌ 获取玩家信息时出错，请稍后重试。")
+            return
+
+        username = data.get("username", player_id)
+        avatar_url = data.get("avatar", "")
+        endorsement = data.get("endorsement", {})
+        endorsement_level = endorsement.get("level", 0) if isinstance(endorsement, dict) else 0
+        title = data.get("title", "")
+
+        # 构建竞技段位信息
+        rank_lines = []
+        comp_ranks = data.get("competitive_ranks", {})
+        pc_ranks = comp_ranks.get("pc", {}) if isinstance(comp_ranks, dict) else {}
+
+        if pc_ranks:
+            for role_key in ["tank", "damage", "support"]:
+                role_data = pc_ranks.get(role_key)
+                role_display = COMPETITIVE_ICONS.get(role_key, "") + " " + ROLE_MAPPING.get(role_key, (role_key, ""))[0]
+
+                if role_data and isinstance(role_data, dict):
+                    division = role_data.get("division")
+                    tier = role_data.get("tier")
+                    if division:
+                        rank_display = _get_rank_display(division, tier)
+                        rank_lines.append(f"   {role_display}: {rank_display}")
+                    else:
+                        rank_lines.append(f"   {role_display}: 未定位")
+                else:
+                    rank_lines.append(f"   {role_display}: 未定位")
+        else:
+            rank_lines.append("   暂无竞技段位数据")
+
+        lines = [
+            f"👤 {username}",
+            f"   (快捷查询 | 绑定ID: {bound_id})",
+        ]
+        if title:
+            lines.append(f"🏷️ 头衔: {title}")
+        lines.append(f"⭐ 赞赏等级: {endorsement_level}")
+        lines.append("🏆 竞技段位:")
+        lines.extend(rank_lines)
+        lines.append("")
+        lines.append("💡 其他快捷指令:")
+        lines.append("   /owstats [模式]  - 统计概览")
+        lines.append("   /owcareer <模式> [英雄] - 生涯统计")
+        lines.append("   /owunbind       - 解绑账号")
+
+        result_text = "\n".join(lines)
+
+        # 如果有头像，发送图片 + 文本
+        if avatar_url:
+            import astrbot.api.message_components as Comp
+
+            chain = [
+                Comp.Image.fromURL(avatar_url),
+                Comp.Plain(result_text),
+            ]
+            yield event.chain_result(chain)
+        else:
+            yield event.plain_result(result_text)

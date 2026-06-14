@@ -1,0 +1,14 @@
+{
+    "default_gamemode": {
+        "description": "默认查询的游戏模式",
+        "type": "string",
+        "options": ["竞技比赛", "快速游戏"],
+        "default": "竞技比赛"
+    },
+    "default_platform": {
+        "description": "默认查询的平台",
+        "type": "string",
+        "options": ["pc", "console"],
+        "default": "pc"
+    }
+}
