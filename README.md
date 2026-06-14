@@ -30,15 +30,24 @@ pip install -r requirements.txt
 3. 重启AstrBot
 
 ## 使用方法
-### owsearch搜索 Overwatch 2 玩家。 用法: /owsearch <玩家名> 示例: /owsearch TeKrop
-### owsummary查询玩家摘要信息（头像、竞技段位等）。 用法: /owsummary [玩家ID] 示例: /owsummary TeKrop#2217 说明: 支持直接使用 #，会自动替换；省略 ID 则查询绑定的账号
-### owstats查询玩家统计概览（胜率、KDA等）。 用法: /owstats [玩家ID] [游戏模式] 游戏模式: 快速、竞技（默认） 示例: /owstats TeKrop#2217 竞技 说明: 省略 ID 则查询绑定的账号
-### owcareer查询玩家生涯统计（按英雄详细数据）。 用法: /owcareer [玩家ID] <游戏模式> [英雄名] 游戏模式: 快速、竞技 英雄名: 可选，支持中文（如 源氏、安娜）或英文（如 genji, ana） 示例: /owcareer TeKrop#2217 竞技 /owcareer TeKrop#2217 竞技 源氏 /owcareer 竞技 源氏 (已绑定ID后)
-### owhero查询英雄详细信息。 用法: /owhero <英雄名> 英雄名支持中文（如 源氏、安娜）或英文（如 genji, ana） 示例: /owhero 源氏, /owhero ana
-### owheroes列出所有英雄，可按角色筛选。 用法: /owheroes [角色] 角色: 坦克(tank)、输出(damage)、支援(support) 示例: /owheroes /owheroes 坦克
-### owbind绑定你的 Overwatch ID 到当前 QQ 号。 绑定后可直接使用 /owme、/owsummary、/owstats、/owcareer 等指令查询自己的数据。 用法: /owbind <玩家ID> 示例: /owbind TeKrop#2217
-### owunbind解绑当前 QQ 号绑定的 Overwatch ID。 用法: /owunbind
-### owme快捷查询自己绑定的 Overwatch 账号摘要信息。 用法: /owme 说明: 需要先使用 /owbind 绑定
+### owsearch 
+搜索 Overwatch 2 玩家。 用法: /owsearch <玩家名> 示例: /owsearch TeKrop
+### owsummary 
+查询玩家摘要信息（头像、竞技段位等）。 用法: /owsummary [玩家ID] 示例: /owsummary TeKrop#2217 说明: 支持直接使用 #，会自动替换；省略 ID 则查询绑定的账号
+### owstats 
+查询玩家统计概览（胜率、KDA等）。 用法: /owstats [玩家ID] [游戏模式] 游戏模式: 快速、竞技（默认） 示例: /owstats TeKrop#2217 竞技 说明: 省略 ID 则查询绑定的账号
+### owcareer 
+查询玩家生涯统计（按英雄详细数据）。 用法: /owcareer [玩家ID] <游戏模式> [英雄名] 游戏模式: 快速、竞技 英雄名: 可选，支持中文（如 源氏、安娜）或英文（如 genji, ana） 示例: /owcareer TeKrop#2217 竞技 /owcareer TeKrop#2217 竞技 源氏 /owcareer 竞技 源氏 (已绑定ID后)
+### owhero 
+查询英雄详细信息。 用法: /owhero <英雄名> 英雄名支持中文（如 源氏、安娜）或英文（如 genji, ana） 示例: /owhero 源氏, /owhero ana
+### owheroes 
+列出所有英雄，可按角色筛选。 用法: /owheroes [角色] 角色: 坦克(tank)、输出(damage)、支援(support) 示例: /owheroes /owheroes 坦克
+### owbind 
+绑定你的 Overwatch ID 到当前 QQ 号。 绑定后可直接使用 /owme、/owsummary、/owstats、/owcareer 等指令查询自己的数据。 用法: /owbind <玩家ID> 示例: /owbind TeKrop#2217
+### owunbind 
+解绑当前 QQ 号绑定的 Overwatch ID。 用法: /owunbind
+### owme 
+快捷查询自己绑定的 Overwatch 账号摘要信息。 用法: /owme 说明: 需要先使用 /owbind 绑定
 
 ## 🔧 故障排除
 ### 常见问题
