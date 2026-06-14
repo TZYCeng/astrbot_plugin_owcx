@@ -1,25 +1,15 @@
-# AstrBOT 守望先锋·归来国际服查询插件
+# AstrBOT 守望先锋国际服查询插件
 作者其实是个小白来的，部分由ai创建，希望各位大神有兴趣可以改吧改吧
-# ❗ API似乎出问题了无法查询，高三了没时间排查和修改，大家有兴趣可以自己改，或者说等三个月后考完，我看看怎么个事儿
+# 注意,部分使用steam启动的玩家无法被查询
+# 缓存依照开发指南更改为KV之前绑定ID作废，请重新绑定
 
 🎮 **守望先锋·归来国际服查询插件**
 
-[![Version](https://img.shields.io/badge/version-v1.2.1-blue.svg)](https://github.com/TZYCeng/astrbot_plugin_owcx)
+[![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://github.com/TZYCeng/astrbot_plugin_owcx)
 [![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
 [![AstrBot](https://img.shields.io/badge/AstrBot-3.0+-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🚀 功能特性
-### ✨ 功能
-🎮 双模式基础战绩查询 - 支持查询玩家竞技 / 休闲模式基础数据，默认展示 PC 平台数据，可手动指定主机端  
-🦸 英雄双模式数据查询 - 默认查询休闲模式英雄数据，支持显式切换竞技模式，覆盖总消灭、场均伤害  
-🔗 用户战网绑定 - 绑定个人战网标签，后续可无参数快捷查询，无需重复输入标签  
-🛡️ 多角色段位细分 - 单独显示坦克、输出、辅助三角色当前段位及分数范围  
-💾 智能缓存降级 - 成功请求数据自动缓存（10 分钟 - 1 小时），请求失败时优先返回历史缓存  
-⏱️ 增强超时与异常处理 - API 超时时间延长至 60 秒，500 错误额外重试 1 次；提前初始化变量避免崩溃，超时 / 服务器故障给出引导  
-🔧 管理员缓存管理 - 管理员可清理玩家数据缓存或全部缓存，优化插件运行效率  
-📋 详细错误引导 - 超时 / 无数据时提示切换模式  
-⚡ 异步性能优化 - 并行请求多维度数据（概要 + 竞技 + 休闲），异步处理 API 调用，响应速度提升  
 
 ## 📦 安装方法
 ### 方法一：通过AstrBot插件市场
@@ -39,26 +29,31 @@ pip install -r requirements.txt
 ```
 3. 重启AstrBot
 
-## 📝 使用方法
-|### 基本命令	                |描述	                                                  |示例                       |
-|:---                          |:---                                                     |:---                       |
-|/ow绑定 玩家#12345	          |绑定玩家战网标签，后续可无参数查询（默认查休闲模式）	        |/ow绑定 Genji#12345        |
-|/ow解绑	                      |解除当前用户绑定的战网账号	                                |/ow解绑                    |
-|/ow	                         |查询已绑定账号的基础战绩（含竞技 + 休闲模式，默认 PC 平台）   |/ow                       |
-|/ow 玩家#12345	             |直接查询指定玩家的基础战绩（默认 PC 平台，含竞技 + 休闲模式） |/ow Hanzo#67890           |
-|/ow 玩家#12345 [pc/console]	 |指定平台查询玩家基础战绩（pc = 电脑端，console = 主机端）	  |/ow Mercy#45678 console   |
-|/ow英雄 英雄名	                |（已绑定账号）查询指定英雄的默认休闲模式数据	              |/ow英雄 雾子               |
-|/ow英雄 英雄名 竞技/休闲	       |（已绑定账号）显式指定模式查询英雄数据	                    |/ow英雄 源氏 竞技/休闲      |
-|/ow英雄 英雄名 玩家#12345	    |（未绑定账号）查询指定玩家的英雄默认休闲模式数据	           |/ow英雄 狂鼠 Tracer#11223  |
-|/ow清理缓存	                   |清理玩家数据缓存（默认不清理全部）	                       |/ow清理缓存                | 
-|/ow清理缓存 全部	             |清理插件所有缓存（含玩家数据、英雄数据等）	                 |/ow清理缓存 全部           |
-|/ow帮助	                      |显示插件所有命令用法、默认模式说明及示例	                    |/ow帮助                   |
-|/ow状态	                      |显示插件运行状态（API 连通性、绑定数、缓存量、默认模式等） 	  |/ow状态                   | 
+## 使用方法
+owsearch
+搜索 Overwatch 2 玩家。 用法: /owsearch <玩家名> 示例: /owsearch TeKrop
+owsummary
+查询玩家摘要信息（头像、竞技段位等）。 用法: /owsummary [玩家ID] 示例: /owsummary TeKrop#2217 说明: 支持直接使用 #，会自动替换；省略 ID 则查询绑定的账号
+owstats
+查询玩家统计概览（胜率、KDA等）。 用法: /owstats [玩家ID] [游戏模式] 游戏模式: 快速、竞技（默认） 示例: /owstats TeKrop#2217 竞技 说明: 省略 ID 则查询绑定的账号
+owcareer
+查询玩家生涯统计（按英雄详细数据）。 用法: /owcareer [玩家ID] <游戏模式> [英雄名] 游戏模式: 快速、竞技 英雄名: 可选，支持中文（如 源氏、安娜）或英文（如 genji, ana） 示例: /owcareer TeKrop#2217 竞技 /owcareer TeKrop#2217 竞技 源氏 /owcareer 竞技 源氏 (已绑定ID后)
+owhero
+查询英雄详细信息。 用法: /owhero <英雄名> 英雄名支持中文（如 源氏、安娜）或英文（如 genji, ana） 示例: /owhero 源氏, /owhero ana
+owheroes
+列出所有英雄，可按角色筛选。 用法: /owheroes [角色] 角色: 坦克(tank)、输出(damage)、支援(support) 示例: /owheroes /owheroes 坦克
+owbind
+绑定你的 Overwatch ID 到当前 QQ 号。 绑定后可直接使用 /owme、/owsummary、/owstats、/owcareer 等指令查询自己的数据。 用法: /owbind <玩家ID> 示例: /owbind TeKrop#2217
+owunbind
+解绑当前 QQ 号绑定的 Overwatch ID。 用法: /owunbind
+owme
+快捷查询自己绑定的 Overwatch 账号摘要信息。 用法: /owme 说明: 需要先使用 /owbind 绑定
 
 ## 🔧 故障排除
 ### 常见问题
 1. **查询失败**
    - 检查战网标签格式是否正确
+   - 部分使用steam启动的玩家无法被查询
    - 确保玩家资料是公开的
    - 检查网络连接
    - 是否设置为好友公开导致误判
@@ -68,15 +63,19 @@ pip install -r requirements.txt
    - 插件会自动重试，请稍后再试
 
 3. **绑定失败**
-   - 确认战网标签格式：玩家#数字
+   - 确认战网标签格式：玩家-数字
    - 检查是否包含特殊字符
 
-4. **缓存问题**
-   - 可以使用 ‘/ow清理缓存 全部’ 重置缓存
-   - 在配置中禁用缓存进行测试
-
 ## 版本历史
-### v1.2.1(当前版本)
+
+### v1.3.0(当前版本)
+- 重构插件
+- 重构命令
+- 缓存更改为KV缓存
+- 添加简单配置界面
+- 计划下一版本进行战绩图片渲染
+  
+### v1.2.1
 - 缓存降级增强
 - 更改描述页
 - 增加英雄查询（独立查询）
