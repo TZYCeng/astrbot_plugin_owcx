@@ -1,8 +1,6 @@
 """
-OverFast API 异步客户端封装模块。
-
 提供对 OverFast API (https://overfast-api.tekrop.fr) 的所有异步 HTTP 调用封装，
-用于查询 Overwatch 2 玩家战绩、英雄信息等数据。
+用于查询 Overwatch 玩家战绩、英雄信息等数据。
 """
 
 import logging
@@ -11,6 +9,31 @@ from typing import Any
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+
+class OverFastAPIError(ValueError):
+    """OverFast API 请求错误。
+
+    携带 HTTP 状态码、服务端返回的错误详情以及重试等待时间，
+    继承 ValueError 以兼容既有的错误捕获逻辑。
+
+    Attributes:
+        status_code: HTTP 状态码。
+        detail: 服务端返回的原始错误文本。
+        retry_after: 服务端建议的重试等待秒数（可能为 None）。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        detail: str = "",
+        retry_after: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail
+        self.retry_after = retry_after
 
 
 class OverFastAPIClient:
@@ -79,7 +102,7 @@ class OverFastAPIClient:
             解析后的 JSON 响应数据（dict 或 list）。
 
         Raises:
-            ValueError: 当返回 HTTP 4xx/5xx 错误时，包含错误详情。
+            OverFastAPIError: 当返回 HTTP 4xx/5xx 错误时，包含状态码与服务端错误详情。
             aiohttp.ClientError: 网络连接错误。
             asyncio.TimeoutError: 请求超时。
         """
@@ -93,20 +116,51 @@ class OverFastAPIClient:
             # 处理 HTTP 错误
             if response.status >= 400:
                 error_text = ""
+                retry_after: int | None = None
                 try:
                     error_json = await response.json()
-                    error_text = error_json.get("error", str(error_json))
+                    if isinstance(error_json, dict):
+                        # 标准错误结构: {"error": "...", "retry_after": N}
+                        error_text = str(error_json.get("error", ""))
+                        ra = error_json.get("retry_after")
+                        if isinstance(ra, (int, float)):
+                            retry_after = int(ra)
+                        # FastAPI 参数校验错误结构: {"detail": [...]}
+                        if not error_text and "detail" in error_json:
+                            error_text = str(error_json["detail"])
+                        if not error_text:
+                            error_text = str(error_json)
+                    else:
+                        error_text = str(error_json)
                 except Exception:
                     error_text = await response.text() or f"HTTP {response.status}"
 
+                # 完整错误暴露在控制台 debug 日志中，便于排查
+                logger.debug(
+                    f"OverFast API 错误: GET {url} params={filtered_params} "
+                    f"-> HTTP {response.status}, error={error_text}, retry_after={retry_after}"
+                )
+
                 if response.status == 404:
-                    raise ValueError(f"未找到请求的资源: {error_text}")
+                    raise OverFastAPIError(
+                        f"未找到请求的资源: {error_text}",
+                        status_code=404, detail=error_text, retry_after=retry_after,
+                    )
                 elif response.status == 429:
-                    raise ValueError(f"请求过于频繁，请稍后重试: {error_text}")
+                    raise OverFastAPIError(
+                        f"请求过于频繁，请稍后重试: {error_text}",
+                        status_code=429, detail=error_text, retry_after=retry_after,
+                    )
                 elif response.status == 503:
-                    raise ValueError(f"服务暂时不可用（可能被限流）: {error_text}")
+                    raise OverFastAPIError(
+                        f"服务暂时不可用（可能被限流）: {error_text}",
+                        status_code=503, detail=error_text, retry_after=retry_after,
+                    )
                 else:
-                    raise ValueError(f"API 错误 (HTTP {response.status}): {error_text}")
+                    raise OverFastAPIError(
+                        f"API 错误 (HTTP {response.status}): {error_text}",
+                        status_code=response.status, detail=error_text, retry_after=retry_after,
+                    )
 
             # 解析 JSON 响应
             try:
@@ -158,12 +212,30 @@ class OverFastAPIClient:
             player_id: 玩家 ID，将 BattleTag 中的 `#` 替换为 `-`。
 
         Returns:
-            玩家摘要字典，包含 username, avatar, competitive_ranks 等。
+            玩家摘要字典，包含 username, avatar, namecard, title,
+            endorsement, competitive 等字段。
 
         Raises:
             ValueError: 玩家不存在或资料私密。
         """
         return await self._request(f"/players/{player_id}/summary")  # type: ignore[return-value]
+
+    async def get_player_full(self, player_id: str) -> dict:
+        """获取玩家完整数据（摘要 + 统计数据）。
+
+        响应包含 summary（头像、名片、竞技段位等）与 stats
+        （各平台/模式下的英雄对比数据，可提取常玩英雄）。
+
+        Args:
+            player_id: 玩家 ID，将 BattleTag 中的 `#` 替换为 `-`。
+
+        Returns:
+            玩家完整数据字典，包含 summary 和 stats 字段。
+
+        Raises:
+            ValueError: 玩家不存在或资料私密。
+        """
+        return await self._request(f"/players/{player_id}")  # type: ignore[return-value]
 
     async def get_player_stats_summary(
         self,
@@ -216,6 +288,47 @@ class OverFastAPIClient:
         return await self._request(  # type: ignore[return-value]
             f"/players/{player_id}/stats/career",
             params={"gamemode": gamemode, "platform": platform, "hero": hero},
+        )
+
+    async def get_heroes_stats(
+        self,
+        platform: str,
+        gamemode: str,
+        region: str,
+        role: str | None = None,
+        map_key: str | None = None,
+        competitive_division: str | None = None,
+        order_by: str = "hero:asc",
+    ) -> list:
+        """获取英雄统计数据（全服英雄选取率/胜率排行榜）。
+
+        Args:
+            platform: 平台，`pc` 或 `console`（必填）。
+            gamemode: 游戏模式，`quickplay` 或 `competitive`（必填）。
+            region: 地区服务器，`europe`, `americas` 或 `asia`（必填）。
+            role: 按角色筛选，`tank`, `damage`, `support`，默认 None。
+            map_key: 按地图筛选（如 `kings-row`），默认 None。
+            competitive_division: 按竞技段位筛选（如 `diamond`），默认 None。
+            order_by: 排序方式，格式为 `field:asc|desc`，
+                field 可选 hero, pickrate, winrate，默认 `hero:asc`。
+
+        Returns:
+            英雄统计列表，每项包含 hero, pickrate, winrate。
+
+        Raises:
+            OverFastAPIError: 参数错误或 API 异常。
+        """
+        return await self._request(  # type: ignore[return-value]
+            "/heroes/stats",
+            params={
+                "platform": platform,
+                "gamemode": gamemode,
+                "region": region,
+                "role": role,
+                "map": map_key,
+                "competitive_division": competitive_division,
+                "order_by": order_by,
+            },
         )
 
     async def get_hero_info(self, hero_key: str) -> dict:

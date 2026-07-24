@@ -1,7 +1,7 @@
 name: astrbot_plugin_owcx
 display_name: 守望先锋查询
 desc: Overwatch 查询插件 - 基于 OverFast API 查询玩家战绩、英雄信息等
-version: v1.3.0 # 插件版本号。格式：v1.1.1 或者 v1.1
+version: v2.0.0 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: TZYCeng # 作者
 repo: https://github.com/TZYCeng/astrbot_plugin_owcx # 插件的仓库地址
 

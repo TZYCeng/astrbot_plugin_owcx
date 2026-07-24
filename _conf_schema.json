@@ -6,9 +6,30 @@
         "default": "竞技比赛"
     },
     "default_platform": {
-        "description": "默认查询的平台",
+        "description": "默认查询的平台（未绑定或绑定时未选择平台时使用）",
         "type": "string",
         "options": ["pc", "console"],
         "default": "pc"
+    },
+    "default_region": {
+        "description": "默认查询的地区（用于英雄胜率/选取率排行榜等查询）",
+        "type": "string",
+        "options": ["asia", "americas", "europe"],
+        "default": "asia"
+    },
+    "max_binds_per_user": {
+        "description": "每个 QQ 号最多可绑定的 Overwatch 账号数量",
+        "type": "int",
+        "default": 3
+    },
+    "enable_image_render": {
+        "description": "是否启用查询结果图片渲染（渲染失败时自动回退为文字）",
+        "type": "bool",
+        "default": true
+    },
+    "show_api_error": {
+        "description": "是否在查询出错时把 API 返回的具体报错回复给查询者",
+        "type": "bool",
+        "default": false
     }
 }
