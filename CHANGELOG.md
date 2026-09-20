@@ -1,6 +1,11 @@
 # 更新日志 (CHANGELOG)
 
-## [v2.0.0]（当前版本）
+## [v2.1.0]（当前版本）
+
+- 英雄映射新增第 53 位英雄 D.Mon（重装，第 4 赛季）与第 54 位英雄血律 Doctrine（支援，第 5 赛季），现可通过 /owhero D.Mon、/owhero 血律 等查询
+- 英雄中文映射补全至 54 名英雄（与 OverFast API HeroKey 枚举对齐）
+
+## [v2.0.0]
 
 - 删除 /owsearch 与 /owheroes 指令（功能被 /owsummary 与 /owhero 覆盖）
 - /owherostats 展示全部英雄胜率（不再截断前 15）；/owhero 同步查询并展示该英雄的全服胜率与选取率
