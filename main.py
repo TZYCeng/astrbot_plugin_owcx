@@ -128,11 +128,12 @@ REGION_REVERSE_MAPPING = {
 }
 
 # 英雄英文名到中文名的映射（用于输出显示）
-# 与 OverFast API HeroKey 枚举（52 名英雄）对齐，中文名为国服官方译名
+# 与 OverFast API HeroKey 枚举对齐（54 名英雄，含随第 5 赛季上线的血律），中文名为国服官方译名
 HERO_NAME_MAPPING = {
     # 坦克
     "doomfist": "末日铁拳",
     "dva": "D.Va",
+    "dmon": "D.Mon",
     "domina": "金驭",
     "hazard": "骇灾",
     "junker-queen": "渣客女王",
@@ -174,6 +175,7 @@ HERO_NAME_MAPPING = {
     "ana": "安娜",
     "baptiste": "巴蒂斯特",
     "brigitte": "布丽吉塔",
+    "doctrine": "血律",
     "illari": "伊拉锐",
     "jetpack-cat": "飞天猫",
     "juno": "朱诺",
