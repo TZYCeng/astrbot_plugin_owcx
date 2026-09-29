@@ -1,11 +1,10 @@
 # AstrBOT 守望先锋国际服查询插件
 作者其实是个小白来的，部分由ai创建
 # 注意,部分使用steam启动的玩家无法被查询
-# 缓存依照开发指南更改为KV之前绑定ID作废，请重新绑定
 
 🎮 **守望先锋·归来国际服查询插件**
 
-[![Version](https://img.shields.io/badge/version-v2.0.0-blue.svg)](https://github.com/TZYCeng/astrbot_plugin_owcx)
+[![Version](https://img.shields.io/badge/version-v2.3.0-blue.svg)](https://github.com/TZYCeng/astrbot_plugin_owcx)
 [![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.9+-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
