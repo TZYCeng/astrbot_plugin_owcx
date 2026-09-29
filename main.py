@@ -26,6 +26,7 @@ from .constants import (
     ROLE_MAPPING,
 )
 from .utils import (
+    DEFAULT_API_BASE_URL,
     build_rank_data as _build_rank_data,
     extract_top_heroes as _extract_top_heroes,
     format_number as _format_number,
@@ -36,6 +37,7 @@ from .utils import (
     get_rank_display as _get_rank_display,
     get_region_display as _get_region_display,
     get_role_display as _get_role_display,
+    normalize_api_base_url,
     normalize_player_id as _normalize_player_id,
     resolve_gamemode as _resolve_gamemode,
     resolve_hero_name as _resolve_hero_name,
@@ -88,13 +90,21 @@ class OverwatchStatsPlugin(BindingStore, Star):
         # 与 _conf_schema.json 保持一致，默认开启图片渲染
         self.enable_image_render: bool = bool(self.config.get("enable_image_render", True))
         self.show_api_error: bool = bool(self.config.get("show_api_error", False))
+        # OverFast 开源可自建，允许通过配置覆盖 API 地址
+        self.api_base_url: str = normalize_api_base_url(
+            str(self.config.get("api_base_url", DEFAULT_API_BASE_URL) or DEFAULT_API_BASE_URL)
+        )
         try:
             self.max_binds_per_user: int = max(int(self.config.get("max_binds_per_user", 3) or 3), 1)
         except (TypeError, ValueError):
             self.max_binds_per_user = 3
         if self.enable_image_render and not _RENDERER_AVAILABLE:
             logger.warning("已开启图片渲染，但渲染模块加载失败（可能未安装 Pillow），将回退文字输出。pip install Pillow")
-        logger.info(f"OW战绩查询插件已加载（图片渲染: {'开启' if self.enable_image_render else '关闭'}）")
+        logger.info(f"OW战绩查询插件已加载（图片渲染: {'开启' if self.enable_image_render else '关闭'}，API: {self.api_base_url}）")
+
+    def _api_client(self) -> OverFastAPIClient:
+        """按配置地址构造 API 客户端（支持自建 OverFast 实例）。"""
+        return OverFastAPIClient(base_url=self.api_base_url)
 
     def _effective_platform(self, bound_platform: str | None = None) -> str:
         if bound_platform in ("pc", "console"):
@@ -138,7 +148,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
             return {}
         portrait_map: dict[str, str] = {}
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 heroes_list = await client.list_heroes()
             for h in heroes_list or []:
                 if isinstance(h, dict) and h.get("key") and h.get("portrait"):
@@ -235,7 +245,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
             yield event.plain_result(f"玩家 ID 非法: {e}")
             return
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 full = await client.get_player_full(player_id)
         except ValueError as e:
             err = str(e).lower()
@@ -274,7 +284,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
             yield event.plain_result("游戏模式无效。可选: 快速(quickplay)、竞技(competitive)")
             return
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 data = await client.get_player_stats_summary(player_id, gamemode=gamemode, platform=platform)
                 full: dict = {}
                 try:
@@ -406,7 +416,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
         gamemode = resolved_mode
         hero_key = _resolve_hero_name(hero) if hero else None
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 data = await client.get_player_career_stats(player_id, gamemode=gamemode, platform=platform, hero=hero_key)
         except ValueError as e:
             err = str(e).lower()
@@ -494,7 +504,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
         hero_key = _resolve_hero_name(hero_name)
         hero_stat: dict | None = None
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 data = await client.get_hero_info(hero_key)
                 try:
                     all_stats = await client.get_heroes_stats(
@@ -570,7 +580,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
                 return
         region_v = resolved_region or self.default_region
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 stats = await client.get_heroes_stats(
                     platform=self.default_platform, gamemode=self.default_gamemode,
                     region=region_v, role=role_filter, order_by="winrate:desc")
@@ -632,7 +642,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
             yield event.plain_result(f"{user_name} 最多绑定 {self.max_binds_per_user} 个账号。/owunbind 解绑后再试。")
             return
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 await client.get_player_summary(player_id)
         except ValueError as e:
             err = str(e).lower()
@@ -715,7 +725,7 @@ class OverwatchStatsPlugin(BindingStore, Star):
             return
         platform = self._effective_platform(bound_platform)
         try:
-            async with OverFastAPIClient() as client:
+            async with self._api_client() as client:
                 full = await client.get_player_full(bound_id)
         except ValueError as e:
             err = str(e).lower()

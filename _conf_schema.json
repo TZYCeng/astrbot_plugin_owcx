@@ -31,5 +31,10 @@
         "description": "是否在查询出错时把 API 返回的具体报错回复给查询者",
         "type": "bool",
         "default": false
+    },
+    "api_base_url": {
+        "description": "OverFast API 服务地址（官方或自建，如 https://overfast-api.tekrop.fr）",
+        "type": "string",
+        "default": "https://overfast-api.tekrop.fr"
     }
 }

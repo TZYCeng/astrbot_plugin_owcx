@@ -60,6 +60,7 @@ pip install -r requirements.txt
 - **每QQ号绑定上限** (`max_binds_per_user`): 每个 QQ 号最多可绑定的 Overwatch 账号数量，默认 3
 - **图片渲染开关** (`enable_image_render`): 开启后（默认开启），/owsummary、/owstats、/owcareer、/owme、/owherostats 的查询结果会渲染为卡片图片；渲染失败自动回退文字；临时图片每小时自动清理，Docker 内如无中文字体请关闭或挂载 `fonts/font.ttf`
 - **报错展示开关** (`show_api_error`): 开启后，查询出错时机器人会把 API 返回的具体报错（含建议重试等待时间）回复给查询者；无论开关与否，完整报错与堆栈都会记录在控制台 debug 日志中
+- **API 服务地址** (`api_base_url`): OverFast API 地址，默认官方 `https://overfast-api.tekrop.fr`；自建服务（如 Docker 部署开源 OverFast）填入自建地址即可，非法值自动回退官方
 - 图片渲染依赖 Pillow：`pip install Pillow>=9.0.0`（已在 requirements.txt 中）
 - 如系统缺少中文字体导致渲染文字异常，可在插件目录下新建 `fonts` 文件夹并放入任意中文字体文件（命名为 `font.ttf` 或 `font.ttc`）
 

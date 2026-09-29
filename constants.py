@@ -5,10 +5,13 @@ RANK_MAPPING = {
     "silver": ("白银", ""),
     "gold": ("黄金", ""),
     "platinum": ("铂金", ""),
+    "emerald": ("翡翠", ""),
     "diamond": ("钻石", ""),
     "master": ("大师", ""),
     "grandmaster": ("宗师", ""),
-    "champion": ("冠军", ""),
+    # API 4.13 起最高段位改名为 ultimate；保留 champion 兼容旧数据/旧自建实例
+    "champion": ("王者", ""),
+    "ultimate": ("王者", ""),
     "top500": ("五百强", ""),
 }
 

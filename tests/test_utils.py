@@ -40,6 +40,11 @@ def test_rank_display():
     assert get_rank_display("diamond", 3) == "钻石 III"
     assert get_rank_display(None, None) == "未定位"
     assert get_rank_display("master", None) == "大师"
+    # 新赛季段位（OverFast API 4.13）：emerald 翡翠，ultimate 王者
+    assert get_rank_display("emerald", 1) == "翡翠 I"
+    assert get_rank_display("ultimate", 1) == "王者 I"
+    # 旧值 champion 保留兼容，同样显示王者
+    assert get_rank_display("champion", 2) == "王者 II"
 
 
 def test_build_rank_fallback():
@@ -74,3 +79,13 @@ def test_bindings_migrate():
     old = {"player_id": "Foo-123", "platform": "bad"}
     out = normalize_loaded(old, "pc")
     assert out["accounts"][0]["platform"] == "pc"
+
+
+def test_normalize_api_base_url():
+    from utils import normalize_api_base_url, DEFAULT_API_BASE_URL
+
+    assert normalize_api_base_url("https://my-ow-api.example.com/") == "https://my-ow-api.example.com"
+    assert normalize_api_base_url("http://192.168.1.10:8000") == "http://192.168.1.10:8000"
+    assert normalize_api_base_url("") == DEFAULT_API_BASE_URL
+    assert normalize_api_base_url("not-a-url") == DEFAULT_API_BASE_URL
+    assert normalize_api_base_url(None) == DEFAULT_API_BASE_URL

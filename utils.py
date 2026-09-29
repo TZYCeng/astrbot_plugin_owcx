@@ -32,6 +32,16 @@ except ImportError:  # pytest 直接导入时回退
 _PLAYER_ID_RE = re.compile(r"^[A-Za-z0-9\u4e00-\u9fa5_\- ]{3,32}$")
 _TIER_ROMAN = ["", "I", "II", "III", "IV", "V"]
 
+DEFAULT_API_BASE_URL = "https://overfast-api.tekrop.fr"
+
+
+def normalize_api_base_url(raw: str | None) -> str:
+    """归一化 API 地址：去空格/去尾斜杠，无效时回退官方地址。"""
+    url = (raw or "").strip().rstrip("/")
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return DEFAULT_API_BASE_URL
+    return url
+
 
 def normalize_player_id(player_id: str) -> str:
     """# -> - 并 strip，不做合法性校验。"""

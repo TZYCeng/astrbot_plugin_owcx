@@ -1,6 +1,12 @@
 # 更新日志 (CHANGELOG)
 
-## [v2.2.0]（当前版本）
+## [v2.3.0]（当前版本）
+
+- 新段位：对齐 OverFast API 4.13 `CompetitiveDivision`，新增翡翠 `emerald`（白金与钻石之间）、王者 `ultimate`（最高段位）；`champion` 改显示为王者并保留兼容旧数据，`top500` 保留
+- 自建服务：新增 `api_base_url` 配置项（默认官方 `https://overfast-api.tekrop.fr`），插件所有请求经该地址构造，支持自建 OverFast 实例；非法地址自动回退官方
+- 测试：补充新段位与地址归一化用例
+
+## [v2.2.0]
 
 - 重构：`main.py` 拆分为 `constants.py`/`utils.py`/`bindings.py`，旧导入路径保留兼容
 - 性能：API 客户端默认超时 30s→15s，进程级 GET 缓存（玩家 120s/榜单 600s/英雄 3600s），429/503 按 `retry_after` 自动重试

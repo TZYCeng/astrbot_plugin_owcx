@@ -88,7 +88,8 @@ class OverFastAPIClient:
         """初始化 OverFast API 客户端。
 
         Args:
-            base_url: API 基础 URL，默认使用官方实例。
+            base_url: API 基础 URL，官方实例或自建实例（如 Docker 自部署）。
+                插件侧通过 `api_base_url` 配置项传入。
             timeout: 请求超时时间（秒），默认 15 秒（聊天场景不宜过长）。
         """
         self.base_url = base_url.rstrip("/")
@@ -300,7 +301,11 @@ class OverFastAPIClient:
         competitive_division: str | None = None,
         order_by: str = "hero:asc",
     ) -> list:
-        """获取英雄统计数据（全服英雄选取率/胜率排行榜）。"""
+        """获取英雄统计数据（全服英雄选取率/胜率排行榜）。
+
+        competitive_division 可选 bronze/silver/gold/platinum/emerald/diamond/master/grandmaster
+        （API 4.13 段位；ultimate 为玩家段位新值，榜单筛选暂不支持）。
+        """
         return await self._request(  # type: ignore[return-value]
             "/heroes/stats",
             params={
