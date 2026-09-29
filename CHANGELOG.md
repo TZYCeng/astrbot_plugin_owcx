@@ -1,6 +1,16 @@
 # 更新日志 (CHANGELOG)
 
-## [v2.1.0]（当前版本）
+## [v2.2.0]（当前版本）
+
+- 重构：`main.py` 拆分为 `constants.py`/`utils.py`/`bindings.py`，旧导入路径保留兼容
+- 性能：API 客户端默认超时 30s→15s，进程级 GET 缓存（玩家 120s/榜单 600s/英雄 3600s），429/503 按 `retry_after` 自动重试
+- 并发：图片/头像下载复用单 session + 6 并发上限，不再每图新建 session
+- 泄漏：`image_renderer` 新增 `cleanup_old_images()`（每小时，`_save_image` 自动触发），`owherostats` 图片模式避免 54 行超长文本
+- 健壮：玩家 ID 归一化+长度/字符校验+URL quote；图片开关默认与 schema 一致为开启；移除 `COMPETITIVE_ICONS` 重复；日志统一 AstrBot logger
+- 可测：新增 `tests/test_utils.py`（纯函数+绑定迁移），新增 `requirements-dev.txt`
+- 杂项：修正 README 仓库地址，删除重复 `logo.png.png`
+
+## [v2.1.0]
 
 - 英雄映射新增第 53 位英雄 D.Mon（重装，第 4 赛季）与第 54 位英雄血律 Doctrine（支援，第 5 赛季），现可通过 /owhero D.Mon、/owhero 血律 等查询
 - 英雄中文映射补全至 54 名英雄（与 OverFast API HeroKey 枚举对齐）

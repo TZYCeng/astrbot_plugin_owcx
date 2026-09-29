@@ -3,12 +3,19 @@
 用于查询 Overwatch 玩家战绩、英雄信息等数据。
 """
 
-import logging
+import asyncio
+import time
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
-logger = logging.getLogger(__name__)
+try:  # 统一使用 AstrBot 日志；独立单测时回退标准 logging
+    from astrbot.api import logger
+except Exception:  # pragma: no cover
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 
 class OverFastAPIError(ValueError):
@@ -36,6 +43,34 @@ class OverFastAPIError(ValueError):
         self.retry_after = retry_after
 
 
+# 进程级 GET 缓存：key -> (expire_ts, data)，降低限流风险
+_CACHE: dict[str, tuple[float, Any]] = {}
+
+
+def _cache_get(key: str) -> Any | None:
+    item = _CACHE.get(key)
+    if not item:
+        return None
+    expire, data = item
+    if expire < time.monotonic():
+        _CACHE.pop(key, None)
+        return None
+    return data
+
+
+def _cache_set(key: str, data: Any, ttl: float) -> None:
+    if ttl <= 0:
+        return
+    # 简单容量保护
+    if len(_CACHE) > 512:
+        _CACHE.clear()
+    _CACHE[key] = (time.monotonic() + ttl, data)
+
+
+def clear_cache() -> None:
+    _CACHE.clear()
+
+
 class OverFastAPIClient:
     """OverFast API 异步客户端。
 
@@ -48,13 +83,13 @@ class OverFastAPIClient:
     def __init__(
         self,
         base_url: str = "https://overfast-api.tekrop.fr",
-        timeout: float = 30.0,
+        timeout: float = 15.0,
     ) -> None:
         """初始化 OverFast API 客户端。
 
         Args:
             base_url: API 基础 URL，默认使用官方实例。
-            timeout: 请求超时时间（秒），默认 30 秒。
+            timeout: 请求超时时间（秒），默认 15 秒（聊天场景不宜过长）。
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = aiohttp.ClientTimeout(total=timeout)
@@ -87,92 +122,117 @@ class OverFastAPIClient:
             await self._session.close()
             self._session = None
 
+    @staticmethod
+    def _quote_segment(seg: str) -> str:
+        return quote(seg, safe="-")
+
     async def _request(
         self,
         endpoint: str,
         params: dict | None = None,
+        *,
+        use_cache: bool = False,
+        cache_ttl: float = 300.0,
+        max_retries: int = 2,
     ) -> dict | list:
-        """发送 GET 请求到 OverFast API。
+        """发送 GET 请求到 OverFast API（含缓存/限流重试）。
 
         Args:
             endpoint: API 端点路径（不含 base_url），如 `/players`。
             params: 查询参数字典，值为 None 的键会被自动过滤。
-
-        Returns:
-            解析后的 JSON 响应数据（dict 或 list）。
+            use_cache: 是否启用进程级 GET 缓存。
+            cache_ttl: 缓存秒数。
+            max_retries: 429/503 时的最大重试次数。
 
         Raises:
-            OverFastAPIError: 当返回 HTTP 4xx/5xx 错误时，包含状态码与服务端错误详情。
-            aiohttp.ClientError: 网络连接错误。
-            asyncio.TimeoutError: 请求超时。
+            OverFastAPIError: 当返回 HTTP 4xx/5xx 错误时。
         """
-        # 过滤值为 None 的参数
         filtered_params = {k: v for k, v in (params or {}).items() if v is not None}
-
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         logger.debug(f"OverFast API 请求: GET {url} params={filtered_params}")
 
-        async with self.session.get(url, params=filtered_params) as response:
-            # 处理 HTTP 错误
-            if response.status >= 400:
-                error_text = ""
-                retry_after: int | None = None
-                try:
-                    error_json = await response.json()
-                    if isinstance(error_json, dict):
-                        # 标准错误结构: {"error": "...", "retry_after": N}
-                        error_text = str(error_json.get("error", ""))
-                        ra = error_json.get("retry_after")
-                        if isinstance(ra, (int, float)):
-                            retry_after = int(ra)
-                        # FastAPI 参数校验错误结构: {"detail": [...]}
-                        if not error_text and "detail" in error_json:
-                            error_text = str(error_json["detail"])
-                        if not error_text:
+        cache_key = ""
+        if use_cache:
+            sorted_items = sorted((k, str(v)) for k, v in filtered_params.items())
+            cache_key = f"GET {url} {sorted_items}"
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                logger.debug(f"OverFast API 缓存命中: {url}")
+                return cached
+
+        last_err: OverFastAPIError | None = None
+        for attempt in range(max_retries + 1):
+            async with self.session.get(url, params=filtered_params) as response:
+                if response.status >= 400:
+                    error_text = ""
+                    retry_after: int | None = None
+                    try:
+                        error_json = await response.json()
+                        if isinstance(error_json, dict):
+                            error_text = str(error_json.get("error", ""))
+                            ra = error_json.get("retry_after")
+                            if isinstance(ra, (int, float)):
+                                retry_after = int(ra)
+                            if not error_text and "detail" in error_json:
+                                error_text = str(error_json["detail"])
+                            if not error_text:
+                                error_text = str(error_json)
+                        else:
                             error_text = str(error_json)
-                    else:
-                        error_text = str(error_json)
-                except Exception:
-                    error_text = await response.text() or f"HTTP {response.status}"
+                    except Exception:
+                        error_text = await response.text() or f"HTTP {response.status}"
 
-                # 完整错误暴露在控制台 debug 日志中，便于排查
-                logger.debug(
-                    f"OverFast API 错误: GET {url} params={filtered_params} "
-                    f"-> HTTP {response.status}, error={error_text}, retry_after={retry_after}"
-                )
+                    logger.debug(
+                        f"OverFast API 错误: GET {url} params={filtered_params} "
+                        f"-> HTTP {response.status}, error={error_text}, retry_after={retry_after}"
+                    )
 
-                if response.status == 404:
-                    raise OverFastAPIError(
-                        f"未找到请求的资源: {error_text}",
-                        status_code=404, detail=error_text, retry_after=retry_after,
-                    )
-                elif response.status == 429:
-                    raise OverFastAPIError(
-                        f"请求过于频繁，请稍后重试: {error_text}",
-                        status_code=429, detail=error_text, retry_after=retry_after,
-                    )
-                elif response.status == 503:
-                    raise OverFastAPIError(
-                        f"服务暂时不可用（可能被限流）: {error_text}",
-                        status_code=503, detail=error_text, retry_after=retry_after,
-                    )
-                else:
+                    if response.status == 404:
+                        raise OverFastAPIError(
+                            f"未找到请求的资源: {error_text}",
+                            status_code=404, detail=error_text, retry_after=retry_after,
+                        )
+                    if response.status in (429, 503) and attempt < max_retries:
+                        wait = retry_after if retry_after else (2 ** attempt)
+                        wait = min(max(wait, 1), 10)
+                        logger.debug(f"OverFast API 限流，{wait}s 后重试 ({attempt + 1}/{max_retries})")
+                        await asyncio.sleep(wait)
+                        last_err = OverFastAPIError(
+                            f"请求过于频繁: {error_text}",
+                            status_code=response.status, detail=error_text,
+                            retry_after=retry_after,
+                        )
+                        continue
+                    if response.status == 429:
+                        raise OverFastAPIError(
+                            f"请求过于频繁，请稍后重试: {error_text}",
+                            status_code=429, detail=error_text, retry_after=retry_after,
+                        )
+                    if response.status == 503:
+                        raise OverFastAPIError(
+                            f"服务暂时不可用（可能被限流）: {error_text}",
+                            status_code=503, detail=error_text, retry_after=retry_after,
+                        )
                     raise OverFastAPIError(
                         f"API 错误 (HTTP {response.status}): {error_text}",
                         status_code=response.status, detail=error_text, retry_after=retry_after,
                     )
 
-            # 解析 JSON 响应
-            try:
-                data = await response.json()
-            except aiohttp.ContentTypeError as e:
-                raw_text = await response.text()
-                raise ValueError(
-                    f"无法解析 API 响应为 JSON: {e}. 原始响应: {raw_text[:500]}"
-                ) from e
+                try:
+                    data = await response.json()
+                except aiohttp.ContentTypeError as e:
+                    raw_text = await response.text()
+                    raise ValueError(
+                        f"无法解析 API 响应为 JSON: {e}. 原始响应: {raw_text[:500]}"
+                    ) from e
 
-            logger.debug(f"OverFast API 响应: {type(data).__name__}")
-            return data
+                logger.debug(f"OverFast API 响应: {type(data).__name__}")
+                if use_cache:
+                    _cache_set(cache_key, data, cache_ttl)
+                return data
+
+        assert last_err is not None
+        raise last_err
 
     async def search_players(
         self,
@@ -181,61 +241,23 @@ class OverFastAPIClient:
         offset: int = 0,
         limit: int = 20,
     ) -> dict:
-        """搜索玩家。
-
-        Args:
-            name: 玩家昵称或 BattleTag（# 替换为 -）。
-            order_by: 排序方式，格式为 `field:asc|desc`，默认 `name:asc`。
-            offset: 结果偏移量，用于分页，默认 0。
-            limit: 每页结果数量，默认 20。
-
-        Returns:
-            搜索结果字典，包含 `total` 和 `results` 字段。
-
-        Raises:
-            ValueError: API 返回错误。
-        """
+        """搜索玩家。"""
         return await self._request(  # type: ignore[return-value]
             "/players",
-            params={
-                "name": name,
-                "order_by": order_by,
-                "offset": offset,
-                "limit": limit,
-            },
+            params={"name": name, "order_by": order_by, "offset": offset, "limit": limit},
+            use_cache=True,
+            cache_ttl=120,
         )
 
     async def get_player_summary(self, player_id: str) -> dict:
-        """获取玩家摘要信息。
-
-        Args:
-            player_id: 玩家 ID，将 BattleTag 中的 `#` 替换为 `-`。
-
-        Returns:
-            玩家摘要字典，包含 username, avatar, namecard, title,
-            endorsement, competitive 等字段。
-
-        Raises:
-            ValueError: 玩家不存在或资料私密。
-        """
-        return await self._request(f"/players/{player_id}/summary")  # type: ignore[return-value]
+        """获取玩家摘要信息。"""
+        pid = self._quote_segment(player_id)
+        return await self._request(f"/players/{pid}/summary", use_cache=True, cache_ttl=120)  # type: ignore[return-value]
 
     async def get_player_full(self, player_id: str) -> dict:
-        """获取玩家完整数据（摘要 + 统计数据）。
-
-        响应包含 summary（头像、名片、竞技段位等）与 stats
-        （各平台/模式下的英雄对比数据，可提取常玩英雄）。
-
-        Args:
-            player_id: 玩家 ID，将 BattleTag 中的 `#` 替换为 `-`。
-
-        Returns:
-            玩家完整数据字典，包含 summary 和 stats 字段。
-
-        Raises:
-            ValueError: 玩家不存在或资料私密。
-        """
-        return await self._request(f"/players/{player_id}")  # type: ignore[return-value]
+        """获取玩家完整数据（摘要 + 统计数据）。"""
+        pid = self._quote_segment(player_id)
+        return await self._request(f"/players/{pid}", use_cache=True, cache_ttl=120)  # type: ignore[return-value]
 
     async def get_player_stats_summary(
         self,
@@ -243,23 +265,13 @@ class OverFastAPIClient:
         gamemode: str | None = None,
         platform: str | None = None,
     ) -> dict:
-        """获取玩家统计摘要。
-
-        Args:
-            player_id: 玩家 ID。
-            gamemode: 游戏模式，`quickplay` 或 `competitive`，默认 None。
-                插件层面支持中文输入（如"快速"、"竞技"），但传入本方法的应为英文。
-            platform: 平台，`pc`, `console` 或 `all`，默认 None。
-
-        Returns:
-            玩家统计摘要字典，包含 general 和 heroes 统计。
-
-        Raises:
-            ValueError: 玩家不存在或资料私密。
-        """
+        """获取玩家统计摘要。"""
+        pid = self._quote_segment(player_id)
         return await self._request(  # type: ignore[return-value]
-            f"/players/{player_id}/stats/summary",
+            f"/players/{pid}/stats/summary",
             params={"gamemode": gamemode, "platform": platform},
+            use_cache=True,
+            cache_ttl=120,
         )
 
     async def get_player_career_stats(
@@ -269,25 +281,13 @@ class OverFastAPIClient:
         platform: str | None = None,
         hero: str | None = None,
     ) -> dict:
-        """获取玩家生涯统计（按英雄分类的详细数据）。
-
-        Args:
-            player_id: 玩家 ID。
-            gamemode: 游戏模式，`quickplay` 或 `competitive`（必填）。
-                插件层面支持中文输入（如"快速"、"竞技"），但传入本方法的应为英文。
-            platform: 平台，`pc`, `console` 或 `all`，默认 None。
-            hero: 英雄英文 key（如 `genji`, `ana`），默认 None 返回所有英雄。
-                插件层面支持中文英雄名，但传入本方法的应为英文 key。
-
-        Returns:
-            玩家生涯统计字典，按英雄 key 分组。
-
-        Raises:
-            ValueError: 玩家不存在、资料私密或参数错误。
-        """
+        """获取玩家生涯统计（按英雄分类的详细数据）。"""
+        pid = self._quote_segment(player_id)
         return await self._request(  # type: ignore[return-value]
-            f"/players/{player_id}/stats/career",
+            f"/players/{pid}/stats/career",
             params={"gamemode": gamemode, "platform": platform, "hero": hero},
+            use_cache=True,
+            cache_ttl=120,
         )
 
     async def get_heroes_stats(
@@ -300,24 +300,7 @@ class OverFastAPIClient:
         competitive_division: str | None = None,
         order_by: str = "hero:asc",
     ) -> list:
-        """获取英雄统计数据（全服英雄选取率/胜率排行榜）。
-
-        Args:
-            platform: 平台，`pc` 或 `console`（必填）。
-            gamemode: 游戏模式，`quickplay` 或 `competitive`（必填）。
-            region: 地区服务器，`europe`, `americas` 或 `asia`（必填）。
-            role: 按角色筛选，`tank`, `damage`, `support`，默认 None。
-            map_key: 按地图筛选（如 `kings-row`），默认 None。
-            competitive_division: 按竞技段位筛选（如 `diamond`），默认 None。
-            order_by: 排序方式，格式为 `field:asc|desc`，
-                field 可选 hero, pickrate, winrate，默认 `hero:asc`。
-
-        Returns:
-            英雄统计列表，每项包含 hero, pickrate, winrate。
-
-        Raises:
-            OverFastAPIError: 参数错误或 API 异常。
-        """
+        """获取英雄统计数据（全服英雄选取率/胜率排行榜）。"""
         return await self._request(  # type: ignore[return-value]
             "/heroes/stats",
             params={
@@ -329,67 +312,41 @@ class OverFastAPIClient:
                 "competitive_division": competitive_division,
                 "order_by": order_by,
             },
+            use_cache=True,
+            cache_ttl=600,
         )
 
     async def get_hero_info(self, hero_key: str) -> dict:
-        """获取英雄详细信息。
-
-        Args:
-            hero_key: 英雄 key，如 `genji`, `ana`, `reinhardt`。
-
-        Returns:
-            英雄详情字典，包含 name, description, role, abilities 等。
-
-        Raises:
-            ValueError: 英雄不存在。
-        """
-        return await self._request(f"/heroes/{hero_key}")  # type: ignore[return-value]
+        """获取英雄详细信息。"""
+        hk = self._quote_segment(hero_key.strip().lower())
+        return await self._request(f"/heroes/{hk}", use_cache=True, cache_ttl=3600)  # type: ignore[return-value]
 
     async def list_heroes(
         self,
         role: str | None = None,
         gamemode: str | None = None,
     ) -> list:
-        """获取英雄列表。
-
-        Args:
-            role: 按角色筛选，`tank`, `damage`, `support`，默认 None。
-            gamemode: 按游戏模式筛选，默认 None。
-
-        Returns:
-            英雄列表，每项包含 key, name, role, portrait 等。
-        """
+        """获取英雄列表。"""
         return await self._request(  # type: ignore[return-value]
             "/heroes",
             params={"role": role, "gamemode": gamemode},
+            use_cache=True,
+            cache_ttl=3600,
         )
 
     async def list_roles(self) -> list:
-        """获取所有角色类型。
-
-        Returns:
-            角色列表，每项包含 key, name, icon, description。
-        """
-        return await self._request("/roles")  # type: ignore[return-value]
+        """获取所有角色类型。"""
+        return await self._request("/roles", use_cache=True, cache_ttl=3600)  # type: ignore[return-value]
 
     async def list_gamemodes(self) -> list:
-        """获取所有游戏模式。
-
-        Returns:
-            游戏模式列表，每项包含 key, name, description, icon。
-        """
-        return await self._request("/gamemodes")  # type: ignore[return-value]
+        """获取所有游戏模式。"""
+        return await self._request("/gamemodes", use_cache=True, cache_ttl=3600)  # type: ignore[return-value]
 
     async def list_maps(self, gamemode: str | None = None) -> list:
-        """获取所有地图。
-
-        Args:
-            gamemode: 按游戏模式筛选，默认 None。
-
-        Returns:
-            地图列表，每项包含 name, gamemodes, location, country_code。
-        """
+        """获取所有地图。"""
         return await self._request(  # type: ignore[return-value]
             "/maps",
             params={"gamemode": gamemode},
+            use_cache=True,
+            cache_ttl=3600,
         )

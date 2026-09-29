@@ -173,11 +173,38 @@ def _rounded_rect(
 
 
 def _save_image(img: Image.Image) -> str:
-    """将图像保存到临时文件并返回路径。"""
+    """将图像保存到临时文件并返回路径（顺带清理过期图片防堆积）。"""
+    try:
+        cleanup_old_images(max_age_seconds=3600)
+    except Exception:
+        pass
     fd, path = tempfile.mkstemp(suffix=".png", prefix="ow_render_")
     os.close(fd)
     img.save(path, format="PNG")
     return path
+
+
+def cleanup_old_images(max_age_seconds: int = 3600) -> int:
+    """删除临时目录中超时的本插件渲染图，返回删除数量。"""
+    import time as _time
+
+    tmpdir = tempfile.gettempdir()
+    now = _time.time()
+    removed = 0
+    try:
+        for name in os.listdir(tmpdir):
+            if not (name.startswith("ow_render_") and name.endswith(".png")):
+                continue
+            full = os.path.join(tmpdir, name)
+            try:
+                if now - os.path.getmtime(full) > max_age_seconds:
+                    os.remove(full)
+                    removed += 1
+            except Exception:
+                continue
+    except Exception:
+        return removed
+    return removed
 
 
 # ===== 卡片渲染 =====
@@ -639,4 +666,41 @@ def render_career_card(
     if remaining > 0:
         draw.text((PAD + 14, y), f"... 还有 {remaining} 个英雄的数据未显示", font=font_sub, fill=TEXT_DIM)
 
+    return _save_image(img)
+
+
+def render_herostats_card(
+    title: str,
+    subtitle: str,
+    rows: Sequence[tuple[str, str]],
+    footer_note: str | None = None,
+) -> str:
+    """渲染全服英雄胜率/选取率榜（文本行列表，避免超长单消息）。"""
+    W = 720
+    PAD = 28
+    font_title = _load_font(30)
+    font_sub = _load_font(22)
+    font_body = _load_font(23)
+
+    H = PAD * 2 + 96 + max(len(rows), 1) * 34 + (40 if footer_note else 0) + 16
+    img = Image.new("RGB", (W, H), BG_COLOR)
+    draw = ImageDraw.Draw(img)
+    _rounded_rect(draw, (10, 10, W - 10, H - 10), 18, CARD_COLOR)
+    draw.rectangle((10, 10, W - 10, 16), fill=ACCENT_COLOR)
+
+    y = PAD + 6
+    draw.text((PAD + 6, y), _fit_text(draw, title, font_title, W - PAD * 2 - 12), font=font_title, fill=ACCENT_COLOR)
+    y += _text_height(font_title) + 10
+    draw.text((PAD + 6, y), _fit_text(draw, subtitle, font_sub, W - PAD * 2 - 12), font=font_sub, fill=TEXT_SUB)
+    y += _text_height(font_sub) + 14
+    draw.line((PAD, y, W - PAD, y), fill=DIVIDER_COLOR, width=2)
+    y += 14
+    for name, value in rows:
+        _rounded_rect(draw, (PAD, y, W - PAD, y + 30), 10, CARD_COLOR_ALT)
+        draw.text((PAD + 14, y + 3), _fit_text(draw, name, font_body, 260), font=font_body, fill=TEXT_SUB)
+        draw.text((PAD + 300, y + 3), _fit_text(draw, value, font_body, W - PAD * 2 - 300 - 14), font=font_body, fill=TEXT_MAIN)
+        y += 34
+    if footer_note:
+        y += 8
+        draw.text((PAD + 14, y), _fit_text(draw, footer_note, font_sub, W - PAD * 2 - 28), font=font_sub, fill=TEXT_DIM)
     return _save_image(img)
